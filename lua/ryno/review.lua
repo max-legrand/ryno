@@ -102,11 +102,11 @@ local function pick_window(path)
           return w
       end
   end
-  if is_normal_win(api.nvim_get_current_win()) then
+  if api.nvim_win_get_config(api.nvim_get_current_win()).relative == "" then
     return api.nvim_get_current_win()
   end
   for _, w in ipairs(api.nvim_tabpage_list_wins(0)) do
-    if is_normal_win(w) then
+    if api.nvim_win_get_config(w).relative == "" then
       return w
     end
   end
