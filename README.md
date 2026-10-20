@@ -71,7 +71,8 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 | --- | --- |
 | `<leader>aa` / `<leader>ar` (this local install: `<leader>ia` / `<leader>ir`) | accept / reject the hunk under the cursor (then jumps to the next) |
 | `<leader>aA` / `<leader>aR` (this local install: `<leader>iA` / `<leader>iR`) | accept / reject all remaining hunks |
-| `]c` / `[c` | next / previous pending hunk |
+| `]c` / `[c` | next / previous pending hunk (lands on its first removed line) |
+| `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
 
 When no hunks are pending the decision is sent. All accepted → the agent's edit runs untouched. All
 rejected → blocked. Mixed → the accepted hunks are written by the extension and the agent's call is

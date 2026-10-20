@@ -45,16 +45,17 @@ local function hl()
     local g = get(group)
     local c = g.fg or get(fallback_group).fg or fallback_rgb
     -- Background-only highlights preserve the filetype's foreground syntax colors.
-    return g.bg or blend(c, base, 0.16), g.bg or blend(c, base, 0.40)
+    return g.bg or blend(c, base, 0.16), g.bg or blend(c, base, 0.40), blend(c, base, 0.28)
   end
   local add_bg, add_text_bg = pair("DiffAdd", "Added", 0x40c060)
-  local del_bg, del_text_bg = pair("DiffDelete", "Removed", 0xe05050)
+  local del_bg, del_text_bg, del_cursor_bg = pair("DiffDelete", "Removed", 0xe05050)
   local change = get("DiffChange")
   local change_bg = change.bg or blend(change.fg or 0xd0a030, base, 0.16)
   set("RynoAdd", { bg = add_bg })
   set("RynoDelete", { bg = del_bg })
   set("RynoAddText", { bg = add_text_bg })
   set("RynoDeleteText", { bg = del_text_bg })
+  set("RynoDeleteCursor", { bg = del_cursor_bg, bold = true }) -- removed line under the virtual cursor
   set("RynoAddDone", { bg = change_bg })
   set("RynoDeleteDone", { bg = change_bg })
   syntax_overlay_cache = {}
@@ -69,14 +70,16 @@ local function hl()
   set("RynoWinbarNo", { fg = get("DiagnosticError").fg or get("ErrorMsg").fg, bg = bg })
 end
 
-local function syntax_overlay(source, strong)
+-- mode: nil (plain removed line), true (changed span), "cursor" (line under the virtual cursor)
+local function syntax_overlay(source, mode)
   source = source or "Normal"
-  local key = (strong and "RynoDeleteText/" or "RynoDelete/") .. source
+  local bg_group = mode == "cursor" and "RynoDeleteCursor" or (mode and "RynoDeleteText" or "RynoDelete")
+  local key = bg_group .. "/" .. source
   local cached = syntax_overlay_cache[key]
   if cached then return cached end
-  local name = "RynoSyntax" .. (strong and "Text_" or "_") .. source:gsub("[^%w_]", "_")
+  local name = "RynoSyntax" .. (mode == "cursor" and "Cursor_" or (mode and "Text_" or "_")) .. source:gsub("[^%w_]", "_")
   local attrs = api.nvim_get_hl(0, { name = source, link = false })
-  attrs.bg = api.nvim_get_hl(0, { name = strong and "RynoDeleteText" or "RynoDelete", link = false }).bg
+  attrs.bg = api.nvim_get_hl(0, { name = bg_group, link = false }).bg
   api.nvim_set_hl(0, name, attrs)
   syntax_overlay_cache[key] = name
   return name
@@ -362,6 +365,64 @@ local function syntax_chunks(buf, row, line, base_hl, strong_hl)
   return chunks
 end
 
+-- Removed lines are virtual (not buffer lines), so the cursor can't land on them. Instead the review keeps
+-- a "virtual cursor" `r.vpos = { h = hunk, i = index into h.old }`: while set, the real cursor sits on the
+-- buffer row the virtual lines are attached to, and j/k walk through the removed lines (see `vstep`).
+local function attach_row(r, h)
+  return math.max(0, math.min(h.display_start - 1, api.nvim_buf_line_count(r.buf) - 1))
+end
+
+local function virt_chunks(r, h, i, selected)
+  local done = h.state == "accepted"
+  local base = selected and "RynoDeleteCursor" or (done and "RynoDeleteDone" or "RynoDelete")
+  local winw = api.nvim_win_is_valid(r.win) and api.nvim_win_get_width(r.win) or 80
+  local textoff = api.nvim_win_is_valid(r.win) and (vim.fn.getwininfo(r.win)[1] or {}).textoff or 4
+  local tab = string.rep(" ", vim.bo[r.buf].tabstop)
+  local l = h.old[i]
+  local gutter = (selected and "▶" or (done and "✓" or "-")) .. string.rep(" ", math.max(textoff - 1, 0))
+  local source_row = h.a_start > 0 and (h.a_start - 1 + i - 1) or 0
+  local parts = syntax_chunks(r.syntax_buf, source_row, l, base, function(first, last)
+    if selected then return "cursor" end
+    local sp = h.spans and h.spans[i]
+    return sp and first < #l - sp[2] and last > sp[1]
+  end)
+  local chunks, used = { { gutter, base } }, vim.fn.strdisplaywidth(gutter)
+  for _, part in ipairs(parts) do
+    part[1] = part[1]:gsub("\t", tab)
+    chunks[#chunks + 1] = part
+    used = used + vim.fn.strdisplaywidth(part[1])
+  end
+  chunks[#chunks + 1] = { string.rep(" ", math.max(0, winw - used)), base }
+  return chunks
+end
+
+local function hunk_virt_lines(r, h)
+  h.vl_cache = h.vl_cache or {}
+  local vl = {}
+  for i = 1, #h.old do
+    if r.vpos and r.vpos.h == h and r.vpos.i == i then
+      vl[i] = virt_chunks(r, h, i, true)
+    else
+      h.vl_cache[i] = h.vl_cache[i] or virt_chunks(r, h, i, false)
+      vl[i] = h.vl_cache[i]
+    end
+  end
+  return vl
+end
+
+local function place_virt(r, h)
+  h.vl_id = api.nvim_buf_set_extmark(r.buf, ns, attach_row(r, h), 0, {
+    id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = true, priority = 4200,
+  })
+end
+
+local function set_vpos(r, h, i)
+  local old = r.vpos
+  r.vpos = h and { h = h, i = i } or nil
+  if old and old.h ~= h and old.h.vl_id and api.nvim_buf_is_valid(r.buf) then place_virt(r, old.h) end
+  if h and h.vl_id and api.nvim_buf_is_valid(r.buf) then place_virt(r, h) end
+end
+
 local function render(r)
   local buf = r.buf
   local lines = preview(r)
@@ -373,12 +434,9 @@ local function render(r)
     vim.bo[buf].modifiable = false
   end
   api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-  local nbuf = api.nvim_buf_line_count(buf)
-  local winw = api.nvim_win_is_valid(r.win) and api.nvim_win_get_width(r.win) or 80
-  local textoff = api.nvim_win_is_valid(r.win) and (vim.fn.getwininfo(r.win)[1] or {}).textoff or 4
-  local tab = string.rep(" ", vim.bo[buf].tabstop)
 
   for _, h in ipairs(r.hunks) do
+    h.vl_id, h.vl_cache = nil, {} -- namespace was cleared; widths/state may have changed
     local done = h.state == "accepted"
     local del_hl, add_hl = done and "RynoDeleteDone" or "RynoDelete", done and "RynoAddDone" or "RynoAdd"
     local del_txt, add_txt = done and "RynoDeleteDone" or "RynoDeleteText", done and "RynoAddDone" or "RynoAddText"
@@ -407,27 +465,7 @@ local function render(r)
       end
       -- Removed text is virtual above the proposed block (cursorable proposed lines remain in the buffer).
       if #h.old > 0 then
-        local gutter = (done and "✓" or "-") .. string.rep(" ", math.max(textoff - 1, 0))
-        local vl = {}
-        for i, l in ipairs(h.old) do
-          local source_row = h.a_start > 0 and (h.a_start - 1 + i - 1) or 0
-          local parts = syntax_chunks(r.syntax_buf, source_row, l, del_hl, function(first, last)
-            local sp = h.spans and h.spans[i]
-            return sp and first < #l - sp[2] and last > sp[1]
-          end)
-          local chunks, used = { { gutter, del_hl } }, vim.fn.strdisplaywidth(gutter)
-          for _, part in ipairs(parts) do
-            part[1] = part[1]:gsub("\t", tab)
-            chunks[#chunks + 1] = part
-            used = used + vim.fn.strdisplaywidth(part[1])
-          end
-          chunks[#chunks + 1] = { string.rep(" ", math.max(0, winw - used)), del_hl }
-          vl[#vl + 1] = chunks
-        end
-        local row = math.max(0, math.min(h.display_start - 1, nbuf - 1))
-        api.nvim_buf_set_extmark(buf, ns, row, 0, {
-          virt_lines = vl, virt_lines_above = true, virt_lines_leftcol = true, priority = 4200,
-        })
+        place_virt(r, h)
       end
     end
   end
@@ -469,6 +507,59 @@ local function goto_hunk(r, h)
     api.nvim_win_call(r.win, function()
       vim.cmd("normal! zz")
     end)
+  end
+  -- land on the first removed line when the hunk has one (it is displayed above the proposed lines)
+  if h.state ~= "rejected" and #h.old > 0 then
+    set_vpos(r, h, 1)
+  else
+    set_vpos(r, nil)
+  end
+end
+
+--- j/k that also walk through the (virtual) removed lines of a hunk, in top-to-bottom display order:
+--- removed lines first, then the proposed lines.
+local function vstep(r, dir)
+  local vp = r.vpos
+  local left_up = false
+  if vp then
+    local ni = vp.i + dir
+    if ni >= 1 and ni <= #vp.h.old then
+      set_vpos(r, vp.h, ni)
+      return
+    end
+    set_vpos(r, nil)
+    if dir > 0 then
+      return -- past the last removed line: the real cursor line is next
+    end
+    left_up = true
+  end
+  local row = cursor_row(r)
+  local function virt_hunk_at(target)
+    for _, h in ipairs(r.hunks) do
+      if h.state ~= "rejected" and #h.old > 0 and attach_row(r, h) + 1 == target then
+        return h
+      end
+    end
+  end
+  if dir > 0 then
+    local h = virt_hunk_at(row + 1)
+    pcall(vim.cmd, "normal! j")
+    if h and cursor_row(r) == row + 1 then
+      set_vpos(r, h, 1)
+    end
+  else
+    local h = not left_up and virt_hunk_at(row)
+    if h then
+      set_vpos(r, h, #h.old)
+    else
+      pcall(vim.cmd, "normal! k")
+    end
+  end
+end
+
+local function vmove(r, dir)
+  for _ = 1, vim.v.count1 do
+    vstep(r, dir)
   end
 end
 
@@ -512,7 +603,8 @@ local function cleanup(r)
   end
   if r.buf and api.nvim_buf_is_valid(r.buf) then
     api.nvim_buf_clear_namespace(r.buf, ns, 0, -1)
-    for _, lhs in ipairs(r.maps) do
+    pcall(api.nvim_del_augroup_by_name, "RynoReview")
+    for _, lhs in ipairs(r.maps or {}) do
       pcall(vim.keymap.del, "n", lhs, { buffer = r.buf })
     end
     if not r.scratch then
@@ -595,6 +687,7 @@ local function decide_here(r, state)
     vim.notify("ryno: no pending hunk under cursor", vim.log.levels.INFO)
     return
   end
+  r.vpos = nil
   h.state = state
   if not maybe_conclude(r) then
     step(r, 1)
@@ -602,6 +695,7 @@ local function decide_here(r, state)
 end
 
 local function decide_all(r, state)
+  r.vpos = nil
   for _, h in ipairs(r.hunks) do
     if h.state == "pending" then
       h.state = state
@@ -633,6 +727,23 @@ local function set_keys(r)
   map(k.reject_all, function() decide_all(r, "rejected") end, "reject all")
   map(k.next, function() step(r, 1) end, "next hunk")
   map(k.prev, function() step(r, -1) end, "previous hunk")
+  -- j/k also walk through the removed (virtual) lines
+  map("j", function() vmove(r, 1) end, "down (through removed lines)")
+  map("k", function() vmove(r, -1) end, "up (through removed lines)")
+  map("<Down>", function() vmove(r, 1) end, "down (through removed lines)")
+  map("<Up>", function() vmove(r, -1) end, "up (through removed lines)")
+  -- any other cursor movement drops the virtual cursor
+  r.aug = api.nvim_create_augroup("RynoReview", { clear = true })
+  api.nvim_create_autocmd("CursorMoved", {
+    group = r.aug,
+    buffer = r.buf,
+    callback = function()
+      local vp = r.vpos
+      if vp and cursor_row(r) ~= attach_row(r, vp.h) + 1 then
+        set_vpos(r, nil)
+      end
+    end,
+  })
 end
 
 local function begin(r)
