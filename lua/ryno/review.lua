@@ -92,7 +92,13 @@ local function is_normal_win(w)
   return api.nvim_win_get_config(w).relative == "" and vim.bo[api.nvim_win_get_buf(w)].buftype == ""
 end
 
-local function pick_window()
+local function pick_window(path)
+  local rp = real(path)
+  for _, w in ipairs(api.nvim_tabpage_list_wins(0)) do
+      if is_normal_win(w) and real(api.nvim_buf_get_name(api.nvim_win_get_buf(w))) == rp then
+          return w
+      end
+  end
   if is_normal_win(api.nvim_get_current_win()) then
     return api.nvim_get_current_win()
   end
@@ -103,6 +109,33 @@ local function pick_window()
   end
   vim.cmd("botright new")
   return api.nvim_get_current_win()
+end
+
+local OPEN_CMDS = { split = "belowright split", vsplit = "belowright vsplit", tab = "tab split" }
+
+--- Window to show the review in, per `config.open`:
+---   "current" (default) reuse the current/matching window; "split" / "vsplit" / "tab" open a new one.
+--- New windows are closed again when the review ends. Returns win, opened(bool), origin_win.
+local function open_window(path)
+  local mode = M.config.open or "current"
+  local origin = api.nvim_get_current_win()
+  if mode == "current" then
+    return pick_window(path), false, origin
+  end
+  local cmd = OPEN_CMDS[mode]
+  if not cmd then
+    vim.notify(("ryno: unknown open mode %q (use current, split, vsplit or tab)"):format(tostring(mode)), vim.log.levels.WARN)
+    return pick_window(path), false, origin
+  end
+  -- split from the window showing the file (or a normal window); `split` keeps its buffer, so no
+  -- stray [No Name] buffer is created
+  api.nvim_set_current_win(pick_window(path))
+  vim.cmd(cmd)
+  local win = api.nvim_get_current_win()
+  if not M.config.focus and api.nvim_win_is_valid(origin) then
+    api.nvim_set_current_win(origin)
+  end
+  return win, true, origin
 end
 
 local function same_lines(buf, old)
@@ -487,9 +520,18 @@ local function cleanup(r)
     end
   end
   if r.win and api.nvim_win_is_valid(r.win) then
-    vim.wo[r.win].winbar = r.was_winbar
-    if r.scratch and r.prev_buf and api.nvim_buf_is_valid(r.prev_buf) then
-      api.nvim_win_set_buf(r.win, r.prev_buf) -- scratch is bufhidden=wipe
+    if r.opened then
+      -- we created this window/tab: close it (scratch is bufhidden=wipe) and go back where we were
+      local was_current = api.nvim_get_current_win() == r.win
+      pcall(api.nvim_win_close, r.win, true)
+      if was_current and r.origin_win and api.nvim_win_is_valid(r.origin_win) then
+        pcall(api.nvim_set_current_win, r.origin_win)
+      end
+    else
+      vim.wo[r.win].winbar = r.was_winbar
+      if r.scratch and r.prev_buf and api.nvim_buf_is_valid(r.prev_buf) then
+        api.nvim_win_set_buf(r.win, r.prev_buf) -- scratch is bufhidden=wipe
+      end
     end
   end
 end
@@ -529,7 +571,8 @@ local function conclude(r, action, extra)
         first = first or math.max(1, h.a_start)
       end
     end
-    M.done[r.id] = { win = r.win or api.nvim_get_current_win(), line = first or 1, scratch = r.scratch, path = r.msg.path }
+    -- a window we opened is gone by now (-1 = invalid, so on_applied leaves windows alone)
+    M.done[r.id] = { win = r.opened and -1 or r.win or api.nvim_get_current_win(), line = first or 1, scratch = r.scratch, path = r.msg.path }
   end
   ;(r.msg._send or M.send)(msg)
   vim.schedule(start_next)
@@ -604,7 +647,7 @@ local function begin(r)
     return conclude(r, "accept")
   end
 
-  r.win = pick_window()
+  r.win, r.opened, r.origin_win = open_window(r.msg.path)
   r.prev_buf = api.nvim_win_get_buf(r.win)
   r.was_winbar = api.nvim_get_option_value("winbar", { win = r.win })
   if M.config.focus then

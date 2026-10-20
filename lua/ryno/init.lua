@@ -9,6 +9,7 @@ local defaults = {
   match_cwd = true, -- only auto-connect to agents running in (a parent/child of) our cwd
   auto_accept = false, -- accept everything without review (toggle with :RynoAuto)
   focus = true, -- jump to the reviewed window
+  open = "current", -- where the review opens: "current" window, "split", "vsplit", or a new "tab"
   ask_reason = false, -- prompt for a reason when rejecting everything
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
   keys = {

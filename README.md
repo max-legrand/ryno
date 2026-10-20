@@ -84,8 +84,10 @@ Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes th
 
 `:RynoAuto` is **ryno's** auto-accept toggle: while on, nvim accepts every incoming file-change review without asking. It is independent of pi's “auto-confirm shell commands” setting. Auto-confirming bash/read/git commands does not turn on `:RynoAuto` or bypass ryno's `edit`/`write` reviews. In bash `block` mode, the shell write restrictions still apply. Leave `:RynoAuto` off if every file change must be reviewed.
 
+`open` chooses where the review appears: `"current"` (default; reuses the current window), `"split"`, `"vsplit"`, or `"tab"`. A split/tab is opened from the window showing the file and closed when the review ends (focus returns to where you were). With `focus=false` the new window opens without taking focus.
+
 Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true,
-ask_reason=false, keys={accept="<leader>aa", reject="<leader>ar", accept_all="<leader>aA",
+open="current", ask_reason=false, keys={accept="<leader>aa", reject="<leader>ar", accept_all="<leader>aA",
 reject_all="<leader>aR", next="]c", prev="[c"}`.
 
 ## Using it (vis)
