@@ -1,0 +1,10 @@
+{
+  "version": 3,
+  "name": "ryno",
+  "command": "/usr/bin/env",
+  "args": ["node", "ryno-prime.ts"],
+  "activation": "onStartup",
+  "events": ["tool_execution_end", "agent_start", "agent_end"],
+  "permissions": ["transcript", "sendMessages"],
+  "toolGate": { "timeoutMs": 60000, "onTimeout": "block" }
+}
