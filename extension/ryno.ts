@@ -336,7 +336,16 @@ type Decision = {
 
 type SystemReject = { action: "reject"; reason: string; system: true }; // timeout, abort, disconnect — not a user choice
 
+/** What an editor tells us about itself, so reviews go to the right one of several. */
+interface EditorState {
+	files: Set<string>; // real paths of its loaded buffers
+	cwd?: string;
+	linked?: boolean; // the user explicitly linked this editor to this session (:RynoLink)
+	lastActive: number; // when we last heard the user doing something in it (our clock)
+}
+
 interface Pending {
+	targets?: Set<net.Socket>; // editors this review was sent to (undefined = all)
 	msg: Record<string, unknown>;
 	resolve: (d: Decision | SystemReject) => void;
 	timer?: ReturnType<typeof setTimeout>;
@@ -347,6 +356,7 @@ export default function ryno(pi: ExtensionAPI) {
 	const sockPath = path.join(dir, `${process.pid}.sock`);
 	const descPath = path.join(dir, `${process.pid}.json`);
 	const clients = new Set<net.Socket>();
+	const editors = new Map<net.Socket, EditorState>();
 	const pending = new Map<string, Pending>();
 	const bashSnapshots = new Map<string, { snap: Snapshot | null; profile?: string; sandboxed: boolean; mode: BashMode }>();
 	let bashMode: BashMode = loadBashMode();
@@ -366,6 +376,39 @@ export default function ryno(pi: ExtensionAPI) {
 		if (!sock.destroyed) sock.write(JSON.stringify(msg) + "\n");
 	};
 	const broadcast = (msg: unknown) => clients.forEach((c) => send(c, msg));
+	const realOrSelf = (p: string) => {
+		try { return fs.realpathSync(p); } catch {}
+		try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); } catch {}
+		return p;
+	};
+	/**
+	 * Pick which connected editors should see a review of `file`, best tier first:
+	 *   3 = manually linked to this session (:RynoLink), 2 = has the file open, 1 = its cwd contains the file (deepest cwd wins), 0 = neither.
+	 * Within a tier the editor the user touched most recently wins. Editors that never reported
+	 * state (vis, old plugins) tie at the bottom, so with no information we ask everyone. Ties among reporting editors pick one.
+	 */
+	function pickEditors(file: unknown, candidates: Iterable<net.Socket> = clients): Set<net.Socket> {
+		const real = typeof file === "string" ? realOrSelf(file) : "";
+		const ranked = [...candidates].map((s) => {
+			const st = editors.get(s);
+			const cwd = st?.cwd ? realOrSelf(st.cwd).replace(/\/+$/, "") : "";
+			const inCwd = !!real && !!cwd && real.startsWith(cwd + "/");
+			const has = st?.linked ? 3 : st && real && st.files.has(real) ? 2 : inCwd ? 1 : 0;
+			return { s, has, depth: has === 1 ? cwd.length : 0, active: st?.lastActive ?? 0 };
+		});
+		ranked.sort((a, b) => b.has - a.has || b.depth - a.depth || b.active - a.active);
+		const top = ranked[0];
+		if (!top) return new Set();
+		const tied = ranked.filter((r) => r.has === top.has && r.depth === top.depth && r.active === top.active).map((r) => r.s);
+		// A genuine tie between editors that reported state: pick one (earliest connected) rather than
+		// opening the review everywhere. Editors that reported nothing can't be told apart: ask them all.
+		return new Set(editors.has(tied[0]) ? tied.slice(0, 1) : tied);
+	}
+	function route(p: Pending) {
+		p.targets = pickEditors(p.msg.path);
+		dbg("route", p.msg.path, "->", p.targets.size, "of", clients.size, "editors");
+		p.targets.forEach((s) => send(s, p.msg));
+	}
 	const hello = () => ({
 		type: "hello",
 		protocol: PROTOCOL,
@@ -420,7 +463,7 @@ export default function ryno(pi: ExtensionAPI) {
 			clients.add(sock);
 			dbg("client connected; total", clients.size);
 			send(sock, hello());
-			for (const p of pending.values()) send(sock, p.msg); // late-joining editor sees open reviews
+			for (const p of pending.values()) if (!p.targets?.size) send(sock, p.msg); // late joiner: only reviews nobody has
 			updateStatus();
 
 			let buf = "";
@@ -435,16 +478,32 @@ export default function ryno(pi: ExtensionAPI) {
 					try {
 						const m = JSON.parse(line);
 						if (m?.type === "decision" && typeof m.id === "string") settle(m.id, m as Decision);
+						else if (m?.type === "editor") {
+							const st = editors.get(sock) ?? { files: new Set<string>(), lastActive: 0 };
+							if (Array.isArray(m.files)) st.files = new Set(m.files.filter((f: unknown) => typeof f === "string"));
+							if (typeof m.cwd === "string") st.cwd = m.cwd;
+							st.linked = m.linked === true;
+							if (m.active) st.lastActive = Date.now();
+							editors.set(sock, st);
+						}
 					} catch {}
 				}
 			});
 			const gone = () => {
 				if (!clients.delete(sock)) return;
+				editors.delete(sock);
 				dbg("client gone; total", clients.size);
 				updateStatus();
 				if (clients.size === 0) {
 					// Nobody left to answer: fail safe instead of hanging the agent forever.
 					for (const id of [...pending.keys()]) settle(id, { action: "reject", reason: "editor disconnected during review", system: true });
+				} else {
+					// Reviews whose editors are all gone move to the best remaining one.
+					for (const p of pending.values()) {
+						if (!p.targets?.has(sock)) continue;
+						p.targets.delete(sock);
+						if (p.targets.size === 0) route(p);
+					}
 				}
 			};
 			sock.on("close", gone);
@@ -461,6 +520,7 @@ export default function ryno(pi: ExtensionAPI) {
 		for (const id of [...pending.keys()]) settle(id, { action: "reject", reason: "agent session ended", system: true });
 		clients.forEach((c) => c.destroy());
 		clients.clear();
+		editors.clear();
 		server?.close();
 		server = null;
 		for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {}
@@ -512,9 +572,10 @@ export default function ryno(pi: ExtensionAPI) {
 	function askEditor(msg: { id: string } & Record<string, unknown>, opts: { signal?: AbortSignal; timeoutMs?: number } = {}) {
 		const id = msg.id;
 		return new Promise<Decision | SystemReject>((resolve) => {
-			pending.set(id, { msg, resolve });
+			const p: Pending = { msg, resolve };
+			pending.set(id, p);
 			opts.signal?.addEventListener("abort", () => settle(id, { action: "reject", reason: "aborted", system: true }), { once: true });
-			broadcast(msg);
+			route(p);
 			const ms = Number(opts.timeoutMs ?? process.env.RYNO_TIMEOUT_MS);
 			if (ms > 0) {
 				const t = setTimeout(

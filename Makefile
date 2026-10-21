@@ -12,4 +12,5 @@ test:
 	bun test/bash_e2e.ts 2>&1 | grep -E "FAIL|ALL OK|FAILED"
 	bun test/block_e2e.ts 2>&1 | grep -E "FAIL|ALL OK|FAILED"
 	bun test/multi.ts 2>&1 | grep -E "FAIL|ALL OK|FAILED"
+	bun test/route.ts 2>&1 | grep -E "FAIL|ALL OK|FAILED"
 	bun test/vis_e2e.ts 2>&1 | grep -E "FAIL|ALL OK|FAILED"

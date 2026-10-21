@@ -51,7 +51,11 @@ manifest to the **global** `~/.prime/agent/settings.json`, then start a new sess
 
 It polls for agents whose working directory is the same as (or a parent/child of) nvim's cwd (symlinks
 resolved) and connects to **all** of them, so a pi and a prime-agent in the same repo both work;
-start agents before or after nvim. Manual: `:RynoConnect` (`!` to pick any agent, ignoring cwd).
+start agents before or after nvim. With several nvim instances connected to one agent, each review goes
+to a single one: the instance that has the file open, else the one whose cwd contains the file (deepest
+cwd first), and among equals the one you used most recently (nvim reports
+its open files and activity to the agent; editors that report nothing, e.g. vis, are asked together as
+before). Manual: `:RynoConnect` (`!` to pick any agent, ignoring cwd).
 
 **vis**:
 
@@ -79,7 +83,12 @@ rejected → blocked. Mixed → the accepted hunks are written by the extension 
 blocked with an explanation. The review buffer is read-only and cursorable; the real file buffer (including any unsaved changes)
 is left untouched. After the agent applies an accepted change, nvim opens/reloads the file.
 
-Commands: `:RynoConnect[!]` `:RynoDisconnect` `:RynoStatus` `:RynoAuto` (toggle auto-accept)
+**Linking.** To pin an nvim to a specific agent session regardless of cwd, run `:RynoLink` and pick the
+session (or `:RynoLink <pid>`). That nvim then connects *only* to the linked session(s), and the session
+sends its reviews to the linked nvim before any other. `:RynoUnlink` goes back to cwd-based auto-connect;
+links are forgotten when the session exits. The statusline shows `ryno⚭` while linked.
+
+Commands: `:RynoLink [pid]` `:RynoUnlink` `:RynoConnect[!]` `:RynoDisconnect` `:RynoStatus` `:RynoAuto` (toggle auto-accept)
 `:RynoAccept` `:RynoReject` `:RynoAcceptAll` `:RynoRejectAll` `:RynoNext` `:RynoPrev`.
 Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes the bash policy for this pi session; it does not persist the setting. Your local install sets the review keys to `<leader>i…` because `<leader>a` is used by Harpoon.
 
@@ -90,6 +99,12 @@ Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes th
 Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true,
 open="current", ask_reason=false, keys={accept="<leader>aa", reject="<leader>ar", accept_all="<leader>aA",
 reject_all="<leader>aR", next="]c", prev="[c"}`.
+
+**Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not
+auto-connected, so it can't grab a review. It's decided once at startup, from the files nvim was opened with:
+`exclude_filetypes={"jjdescription","gitcommit","gitrebase"}`, `exclude_patterns` (Lua patterns on the path,
+e.g. `"%.jjdescription$"`, `"COMMIT_EDITMSG$"`), or your own `exclude=function() return … end`. Set
+`RYNO_DISABLE=1` to keep any one nvim out. `:RynoConnect` / `:RynoLink` still work there if you ask.
 
 ## Using it (vis)
 
