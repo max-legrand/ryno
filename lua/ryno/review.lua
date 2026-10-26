@@ -849,6 +849,15 @@ local function begin(r)
         break
       end
     end
+    if not file_buf then
+      local b = vim.fn.bufadd(r.msg.path)
+      if b and b > 0 then
+        pcall(vim.fn.bufload, b)
+        if api.nvim_buf_is_loaded(b) and real(api.nvim_buf_get_name(b)) == real(r.msg.path) then
+          file_buf = b
+        end
+      end
+    end
   end
   if file_buf and vim.bo[file_buf].modified then
     vim.notify("ryno: file buffer has unsaved changes; using a separate review buffer", vim.log.levels.WARN)
