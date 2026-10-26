@@ -25,6 +25,8 @@ local defaults = {
     reject_all = "<leader>aR",
     next = "]c",
     prev = "[c",
+    undo = "<leader>au",
+    comment = "<leader>ac",
   },
 }
 

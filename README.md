@@ -75,6 +75,8 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 | --- | --- |
 | `<leader>aa` / `<leader>ar` (this local install: `<leader>ia` / `<leader>ir`) | accept / reject the hunk under the cursor (then jumps to the next) |
 | `<leader>aA` / `<leader>aR` (this local install: `<leader>iA` / `<leader>iR`) | accept / reject all remaining hunks |
+| `<leader>au` | undo the decision for the hunk under the cursor (returns it to pending) |
+| `<leader>ac` | add/edit a comment on a rejected hunk; included in the agent's rejection feedback |
 | `]c` / `[c` | next / previous pending hunk (lands on its first removed line) |
 | `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
 
@@ -98,7 +100,7 @@ Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes th
 
 Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true,
 open="current", ask_reason=false, keys={accept="<leader>aa", reject="<leader>ar", accept_all="<leader>aA",
-reject_all="<leader>aR", next="]c", prev="[c"}`.
+reject_all="<leader>aR", next="]c", prev="[c", undo="<leader>au", comment="<leader>ac"}`.
 
 **Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not
 auto-connected, so it can't grab a review. It's decided once at startup, from the files nvim was opened with:

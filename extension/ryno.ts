@@ -331,7 +331,7 @@ type Decision = {
 	reason?: string;
 	accepted?: number;
 	total?: number;
-	rejected?: Array<{ line: number; old: string; new: string }>;
+	rejected?: Array<{ line: number; old: string; new: string; comment?: string }>;
 };
 
 type SystemReject = { action: "reject"; reason: string; system: true }; // timeout, abort, disconnect — not a user choice
@@ -731,7 +731,8 @@ export default function ryno(pi: ExtensionAPI) {
 		}
 
 		const why = (decision as any).reason ? ` Reason: ${(decision as any).reason}` : "";
-		return { block: true, reason: `The user rejected this change to ${rel} in their editor. Nothing was written.${why} Ask what they want instead of retrying the same change.` };
+		const rejected = describeRejected((decision as Decision).rejected);
+		return { block: true, reason: `The user rejected this change to ${rel} in their editor. Nothing was written.${why}${rejected ? `\n${rejected}` : ""} Ask what they want instead of retrying the same change.` };
 	});
 
 	// Tell editors when an accepted change landed, so they can reload the buffer.
@@ -774,7 +775,7 @@ function describeRejected(r: Decision["rejected"]): string {
 	if (!Array.isArray(r) || r.length === 0) return "";
 	const clip = (s: string) => (s.length > 300 ? s.slice(0, 300) + "…" : s);
 	const items = r.slice(0, 10).map(
-		(h) => `  - near line ${h.line}: wanted to replace ${JSON.stringify(clip(h.old))} with ${JSON.stringify(clip(h.new))}`,
+		(h) => `  - near line ${h.line}: wanted to replace ${JSON.stringify(clip(h.old))} with ${JSON.stringify(clip(h.new))}${h.comment ? ` — User comment: ${h.comment}` : ""}`,
 	);
 	return `Rejected hunks:\n${items.join("\n")}\n` + (r.length > 10 ? `  (+${r.length - 10} more)\n` : "");
 }

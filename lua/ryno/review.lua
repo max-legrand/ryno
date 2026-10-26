@@ -642,13 +642,16 @@ local function conclude(r, action, extra)
   local msg = { type = "decision", id = r.id, action = action, accepted = acc, total = #r.hunks }
   if action == "partial" then
     msg.content = diff.apply(r.old, r.hunks, r.old_nl)
+  end
+  if action ~= "accept" then
     msg.rejected = {}
     for _, h in ipairs(r.hunks) do
-      if h.state ~= "accepted" then
+      if h.state == "rejected" then
         msg.rejected[#msg.rejected + 1] = {
           line = math.max(1, h.a_start),
           old = table.concat(h.old, "\n"),
           new = table.concat(h.new, "\n"),
+          comment = h.comment,
         }
       end
     end
@@ -679,6 +682,30 @@ local function maybe_conclude(r, extra)
   local action = (acc == #r.hunks) and "accept" or (acc == 0 and "reject" or "partial")
   conclude(r, action, extra)
   return true
+end
+
+local function undo_here(r)
+  local h = hunk_at_cursor(r)
+  if not h or h.state == "pending" then
+    vim.notify("ryno: no decided hunk under cursor", vim.log.levels.INFO)
+    return
+  end
+  h.state, h.comment = "pending", nil
+  render(r)
+end
+
+local function comment_here(r)
+  local h = hunk_at_cursor(r)
+  if not h or h.state ~= "rejected" then
+    vim.notify("ryno: comment requires a rejected hunk under cursor", vim.log.levels.INFO)
+    return
+  end
+  vim.ui.input({ prompt = "ryno: comment on rejected hunk: ", default = h.comment or "" }, function(text)
+    if text ~= nil and M.active == r and not r.concluded then
+      h.comment = text ~= "" and text or nil
+      render(r)
+    end
+  end)
 end
 
 local function decide_here(r, state)
@@ -727,6 +754,8 @@ local function set_keys(r)
   map(k.reject_all, function() decide_all(r, "rejected") end, "reject all")
   map(k.next, function() step(r, 1) end, "next hunk")
   map(k.prev, function() step(r, -1) end, "previous hunk")
+  map(k.undo, function() undo_here(r) end, "undo hunk decision")
+  map(k.comment, function() comment_here(r) end, "comment on rejected hunk")
   -- j/k also walk through the removed (virtual) lines
   map("j", function() vmove(r, 1) end, "down (through removed lines)")
   map("k", function() vmove(r, -1) end, "up (through removed lines)")
