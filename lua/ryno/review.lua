@@ -413,7 +413,7 @@ end
 
 local function place_virt(r, h)
   h.vl_id = api.nvim_buf_set_extmark(r.buf, ns, attach_row(r, h), 0, {
-    id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = true, priority = 4200,
+    id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = false, priority = 4200,
   })
 end
 
@@ -608,7 +608,12 @@ local function cleanup(r)
     for _, lhs in ipairs(r.maps or {}) do
       pcall(vim.keymap.del, "n", lhs, { buffer = r.buf })
     end
-    if not r.scratch then
+    if r.in_file then
+      vim.bo[r.buf].modifiable = true
+      api.nvim_buf_set_lines(r.buf, 0, -1, false, r.file_lines)
+      vim.bo[r.buf].modified = r.file_modified
+      vim.bo[r.buf].modifiable = r.was_modifiable
+    elseif not r.scratch then
       vim.bo[r.buf].modifiable = r.was_modifiable
     end
   end
@@ -836,9 +841,37 @@ local function begin(r)
       end
     end
   end
-  r.scratch = true
-  r.buf = make_scratch(r, preview(r))
-  api.nvim_win_set_buf(r.win, r.buf)
+  local file_buf
+  if M.config.review_in_file and not r.msg.isNew and not r.msg.deleted then
+    for _, b in ipairs(api.nvim_list_bufs()) do
+      if api.nvim_buf_is_loaded(b) and real(api.nvim_buf_get_name(b)) == real(r.msg.path) then
+        file_buf = b
+        break
+      end
+    end
+  end
+  if file_buf and vim.bo[file_buf].modified then
+    vim.notify("ryno: file buffer has unsaved changes; using a separate review buffer", vim.log.levels.WARN)
+    file_buf = nil
+  elseif file_buf and not same_lines(file_buf, r.old) then
+    vim.notify("ryno: file buffer differs from the on-disk original; using a separate review buffer", vim.log.levels.WARN)
+    file_buf = nil
+  end
+  if file_buf then
+    r.in_file, r.scratch, r.buf = true, false, file_buf
+    r.file_lines = api.nvim_buf_get_lines(file_buf, 0, -1, false)
+    r.file_modified = vim.bo[file_buf].modified
+    r.was_modifiable = vim.bo[file_buf].modifiable
+    api.nvim_win_set_buf(r.win, file_buf)
+    vim.bo[file_buf].modifiable = true
+    api.nvim_buf_set_lines(file_buf, 0, -1, false, preview(r))
+    vim.bo[file_buf].modified = false
+    vim.bo[file_buf].modifiable = false
+  else
+    r.scratch = true
+    r.buf = make_scratch(r, preview(r))
+    api.nvim_win_set_buf(r.win, r.buf)
+  end
 
   set_keys(r)
   render(r)

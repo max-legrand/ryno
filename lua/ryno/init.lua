@@ -10,6 +10,7 @@ local defaults = {
   auto_accept = false, -- accept everything without review (toggle with :RynoAuto)
   focus = true, -- jump to the reviewed window
   open = "current", -- where the review opens: "current" window, "split", "vsplit", or a new "tab"
+  review_in_file = false, -- preview in the loaded, unmodified file buffer instead of a .ryno preview buffer
   ask_reason = false, -- prompt for a reason when rejecting everything
   -- Don't auto-connect nvims that were opened as a throwaway $EDITOR (`jj desc`, `git commit`, rebase
   -- todo...), so they never steal a review. Decided once from the files nvim was started with.
