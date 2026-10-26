@@ -105,7 +105,7 @@ reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<lead
 **Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not
 auto-connected, so it can't grab a review. It's decided once at startup, from the files nvim was opened with:
 `exclude_filetypes={"jjdescription","gitcommit","gitrebase"}`, `exclude_patterns` (Lua patterns on the path,
-e.g. `"%.jjdescription$"`, `"COMMIT_EDITMSG$"`), or your own `exclude=function() return … end`. Set
+e.g. `"%.jjdescription$"`, `"COMMIT_EDITMSG$"`; pi's `/tmp/pi-editor-*` and macOS `$TMPDIR/pi-editor-*` paths are excluded by default), or your own `exclude=function() return … end`. Set
 `RYNO_DISABLE=1` to keep any one nvim out. `:RynoConnect` / `:RynoLink` still work there if you ask.
 
 ## Using it (vis)

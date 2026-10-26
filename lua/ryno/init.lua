@@ -16,7 +16,7 @@ local defaults = {
   -- todo...), so they never steal a review. Decided once from the files nvim was started with.
   -- Manual :RynoConnect / :RynoLink still work. Also off when $RYNO_DISABLE is set.
   exclude_filetypes = { "jjdescription", "gitcommit", "gitrebase" },
-  exclude_patterns = { "%.jjdescription$", "COMMIT_EDITMSG$", "MERGE_MSG$", "TAG_EDITMSG$", "git%-rebase%-todo$" }, -- Lua patterns on the full path
+  exclude_patterns = { "%.jjdescription$", "COMMIT_EDITMSG$", "MERGE_MSG$", "TAG_EDITMSG$", "git%-rebase%-todo$", "/pi%-editor%-" }, -- Lua patterns on the full path
   exclude = nil, -- optional function() -> boolean for custom rules (true = don't auto-connect)
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
   keys = {
