@@ -259,6 +259,7 @@ winbar_impl = function()
     join(
       hint(k.accept, yes), hint(k.reject, no),
       hint(k.accept_all, yes_all), hint(k.reject_all, no_all),
+      hint(k.undo, "undo"), hint(k.comment, "comment"),
       hint(k.next .. "/" .. k.prev, "jump")
     ),
     join(hint(k.accept, yes), hint(k.reject, no), hint(k.accept_all, "all"), hint(k.reject_all, "none")),
@@ -696,14 +697,17 @@ end
 
 local function comment_here(r)
   local h = hunk_at_cursor(r)
-  if not h or h.state ~= "rejected" then
-    vim.notify("ryno: comment requires a rejected hunk under cursor", vim.log.levels.INFO)
+  if not h or h.state == "accepted" then
+    vim.notify("ryno: comment requires a pending or rejected hunk under cursor", vim.log.levels.INFO)
     return
   end
-  vim.ui.input({ prompt = "ryno: comment on rejected hunk: ", default = h.comment or "" }, function(text)
+  vim.ui.input({ prompt = "ryno: comment and reject hunk: ", default = h.comment or "" }, function(text)
     if text ~= nil and M.active == r and not r.concluded then
       h.comment = text ~= "" and text or nil
-      render(r)
+      h.state = "rejected"
+      if not maybe_conclude(r) then
+        step(r, 1)
+      end
     end
   end)
 end

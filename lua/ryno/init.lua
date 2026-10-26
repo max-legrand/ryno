@@ -19,14 +19,14 @@ local defaults = {
   exclude = nil, -- optional function() -> boolean for custom rules (true = don't auto-connect)
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
   keys = {
-    accept = "<leader>aa",
-    reject = "<leader>ar",
-    accept_all = "<leader>aA",
-    reject_all = "<leader>aR",
+    accept = "<leader>ia",
+    reject = "<leader>ir",
+    accept_all = "<leader>iA",
+    reject_all = "<leader>iR",
     next = "]c",
     prev = "[c",
-    undo = "<leader>au",
-    comment = "<leader>ac",
+    undo = "<leader>iu",
+    comment = "<leader>ic",
   },
 }
 
