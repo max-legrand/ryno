@@ -701,15 +701,43 @@ local function comment_here(r)
     vim.notify("ryno: comment requires a pending or rejected hunk under cursor", vim.log.levels.INFO)
     return
   end
-  vim.ui.input({ prompt = "ryno: comment and reject hunk: ", default = h.comment or "" }, function(text)
-    if text ~= nil and M.active == r and not r.concluded then
+
+  local buf = api.nvim_create_buf(false, true)
+  local initial = vim.split(h.comment or "", "\n", { plain = true })
+  api.nvim_buf_set_lines(buf, 0, -1, false, initial)
+  vim.bo[buf].buftype = "acwrite"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].filetype = "markdown"
+  local width = math.min(70, math.max(40, api.nvim_win_get_width(r.win) - 8))
+  local height = 8
+  local win = api.nvim_open_win(buf, true, {
+    relative = "editor", width = width, height = height,
+    row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
+    col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+    style = "minimal", border = "rounded", title = " Comment + reject (Ctrl-S submit, Esc cancel) ",
+    title_pos = "center",
+  })
+  vim.wo[win].wrap = true
+  vim.wo[win].winhighlight = "Normal:Normal,FloatBorder:FloatBorder"
+  vim.cmd("startinsert")
+
+  local closed = false
+  local function finish(submit)
+    if closed then return end
+    closed = true
+    local text
+    if submit and api.nvim_buf_is_valid(buf) then
+      text = table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+    end
+    if api.nvim_win_is_valid(win) then api.nvim_win_close(win, true) end
+    if submit and text ~= nil and M.active == r and not r.concluded then
       h.comment = text ~= "" and text or nil
       h.state = "rejected"
-      if not maybe_conclude(r) then
-        step(r, 1)
-      end
+      if not maybe_conclude(r) then step(r, 1) end
     end
-  end)
+  end
+  vim.keymap.set({ "n", "i" }, "<C-s>", function() finish(true) end, { buffer = buf, nowait = true, silent = true })
+  vim.keymap.set({ "n", "i" }, "<Esc>", function() finish(false) end, { buffer = buf, nowait = true, silent = true })
 end
 
 local function decide_here(r, state)
