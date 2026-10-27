@@ -1,0 +1,31 @@
+#!/bin/sh
+# Run codex with ryno's review socket open from the moment it starts.
+#
+# Codex only fires its SessionStart hook once the first message is sent, so without this an editor
+# can't connect (or be :RynoLink-ed) to a fresh codex session until then. This starts the ryno
+# daemon for this process first, then replaces itself with codex (same pid, so the hooks find it).
+#
+#   alias codex="$HOME/path/to/ryno/bin/ryno-codex"
+#
+# Env: RYNO_CODEX = the real codex to run (default: `codex` on PATH), RYNO_NODE = node binary.
+# The hooks must be installed too (see README: `node extension/hooks/ryno-hook.ts --config codex`).
+
+self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+root=$(cd "$(dirname "$self")/.." && pwd)
+real=${RYNO_CODEX:-codex}
+
+resolved=$(command -v "$real" 2>/dev/null)
+if [ -z "$resolved" ]; then
+  echo "ryno-codex: '$real' not found; set RYNO_CODEX to the codex binary" >&2
+  exit 127
+fi
+if [ "$(readlink -f "$resolved" 2>/dev/null || printf '%s' "$resolved")" = "$self" ]; then
+  echo "ryno-codex: '$real' resolves to this wrapper; set RYNO_CODEX to the real codex binary" >&2
+  exit 1
+fi
+
+if [ -z "${RYNO_DISABLE:-}" ]; then
+  export RYNO_AGENT_PID=$$
+  "${RYNO_NODE:-node}" "$root/extension/hooks/ryno-hook.ts" --start codex </dev/null >/dev/null 2>&1 || true
+fi
+exec "$resolved" "$@"

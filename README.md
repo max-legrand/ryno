@@ -2,13 +2,15 @@
 
 Review structured agent edits **inside your editor before they are applied**, like avante's legacy
 mode. For arbitrary shell writes, choose a policy: block them where possible, review them after the
-command, or let them pass. Works with **pi** and **prime-agent** (the Rust build), from **neovim** and
-**vis**.
+command, or let them pass. Works with **pi**, **prime-agent** (the Rust build), **Claude Code** and
+**Codex**, from **neovim** and **vis**.
 
 ```
  pi / prime-agent ──(tool call gate)──▶ ryno extension ──unix socket──▶ nvim / vis
         ▲                                                                  │
         └────────────── accept · reject · partial (per hunk) ◀─────────────┘
+
+ Claude Code / Codex ──(PreToolUse / PostToolUse hooks)──▶ ryno-hook ──▶ ryno daemon (one per agent) ──▶ nvim / vis
 ```
 
 * For structured **edit/write** calls, the agent extension computes the proposed change and sends
@@ -40,6 +42,27 @@ manifest to the **global** `~/.prime/agent/settings.json`, then start a new sess
 ```json
 { "nativeExtensions": ["/abs/path/to/ryno/extension/prime/extension.json"] }
 ```
+
+**Claude Code / Codex** — hooks (needs `node` ≥ 23.6 on the agent's `PATH`). Print the configuration
+with absolute paths filled in and merge its `hooks` into the agent's settings:
+
+```sh
+node extension/hooks/ryno-hook.ts --config claude   # → ~/.claude/settings.json (or a project's .claude/settings.json)
+node extension/hooks/ryno-hook.ts --config codex    # → ~/.codex/hooks.json
+```
+
+Codex asks you to review/trust new hooks before it runs them. Codex fires `SessionStart` only when
+the first message is sent, so editors can't see a fresh session until then. To make the socket exist
+as soon as codex opens, start codex through the wrapper:
+
+```sh
+alias codex="$HOME/ml/ryno/bin/ryno-codex"      # in your shell rc; RYNO_CODEX=/path/to/codex if it's not on PATH
+```
+
+The hooks start a small daemon per agent process (`extension/hooks/ryno-daemon.ts`) that holds the
+editor socket and runs the same core as the pi extension; it exits with the agent. Without the
+wrapper, Codex's first hook starts it. The hook processes are short-lived and talk to it over
+`/tmp/ryno-<uid>/hook-<agent pid>.sock`.
 
 ### 2. Editor side
 
@@ -164,6 +187,23 @@ Needs `vis:communicate` and `nc -U` (or `socat`). Auto-connects at startup and w
   if the turn already ended.
 * prime-agent cancels a gate after **60 s** (host maximum); ryno answers at 55 s with a rejection
   ("no answer from the editor"). Override with `RYNO_TIMEOUT_MS`.
+* **Claude Code / Codex** (hooks):
+  * What's reviewed: Claude's `Write`, `Edit`, `MultiEdit`; Codex's `apply_patch` (also when sent as
+    `apply_patch <<'EOF'` through the shell). A patch touching several files is reviewed file by file;
+    if you decline any, the whole call is blocked, the files you accepted are written by ryno, and the
+    agent gets the per-file outcome (like prime-agent's ipython cells). `NotebookEdit` isn't reviewed.
+  * Hooks that run past their `timeout` are killed, and Claude Code then **proceeds without them**,
+    so ryno answers 10 s early with a rejection. `--config` uses 600 s; if you change it, set
+    `RYNO_HOOK_TIMEOUT` (seconds) to match. Interrupting the agent withdraws the review from the editor.
+  * Accepting in the editor does not skip the agent's own permission prompt, so use Claude's
+    accept-edits mode or set `RYNO_ALLOW_ACCEPTED=1` (e.g. in the `env` of `~/.claude/settings.json`) to
+    have ryno answer `allow` for changes you accepted (Claude only; Codex has no such answer).
+  * Bash `block` mode can't use ryno's sandbox here (the hooks can't rewrite commands, and Codex already
+    sandboxes them): changes are reverted after the command and the agent is told. In `block` mode the
+    policy is added to the agent's context at session start. There's no `/ryno-bash`: use
+    `settings.json` or `RYNO_BASH`. A command whose post-tool hook never fires is settled at `Stop`.
+  * Editors match on the session's project dir (`CLAUDE_PROJECT_DIR` for Claude, not its shell's current
+    `cd`). `RYNO_DISABLE=1` in the agent's environment turns the hooks (and the wrapper) off.
 * Parallel sibling edits to the *same file* in one assistant message are reviewed against the same
   on-disk text; that is a pi scheduling property, not something ryno can serialise.
 * The socket lives in `/tmp/ryno-<uid>/` (mode 0700/0600). Any process of your user can talk to it —
@@ -191,6 +231,8 @@ restored from the file on disk). Several editors may connect; the first answer w
 ```
 extension/ryno.ts            core + pi extension (socket server, edit semantics incl. fuzzy match)
 extension/prime/             prime-agent adapter (JSON-RPC v3 shim + ipython-cell analysis)
+extension/hooks/             Claude Code / Codex: hook command, per-agent daemon, Edit/apply_patch semantics
+bin/ryno-codex               codex wrapper: opens the review socket before the first message
 lua/ryno/ plugin/ryno.lua    neovim plugin (client, inline review UI, pure diff/hunk logic)
 vis/ryno/                    vis plugin (+ tiny JSON codec)
 test/                        `make test` — unit + integration tests (real nvim/vis and macOS sandbox; mocked agent hosts)

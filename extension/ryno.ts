@@ -1,5 +1,6 @@
 /**
- * ryno — editor-side review of agent edits (pi / prime-agent extension)
+ * ryno — editor-side review of agent edits (pi / prime-agent extension; the core of the Claude Code /
+ * Codex hook daemon in ./hooks)
  *
  * Intercepts `edit` and `write` tool calls, sends the proposed change to a
  * connected editor (nvim / vis) over a unix socket, and waits for the user to
@@ -136,7 +137,7 @@ export function resolvePath(cwd: string, p: string): string {
 	return path.resolve(cwd, p);
 }
 
-function runtimeDir(): string {
+export function runtimeDir(): string {
 	return process.env.RYNO_DIR || path.join("/tmp", `ryno-${process.getuid?.() ?? "u"}`);
 }
 
@@ -702,6 +703,7 @@ export default function ryno(pi: ExtensionAPI) {
 			path: abs,
 			relpath: path.relative(ctx.cwd, abs),
 			isNew: original === null,
+			...(event.deleted ? { deleted: true } : {}), // adapters: the tool deletes the file (proposed is "")
 			original,
 			proposed,
 		};
