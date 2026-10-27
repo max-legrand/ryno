@@ -41,11 +41,18 @@ local function hl()
   -- Many minimal themes define DiffAdd/DiffDelete with a foreground only. Then derive tinted
   -- backgrounds from those colours so hunks stay visible; honour themes that do set a background.
   local base = get("Normal").bg or (vim.o.background == "light" and 0xffffff or 0x000000)
+  -- Returns line bg, changed-text bg (word emphasis), virtual-cursor bg.
   local function pair(group, fallback_group, fallback_rgb)
     local g = get(group)
-    local c = g.fg or get(fallback_group).fg or fallback_rgb
     -- Background-only highlights preserve the filetype's foreground syntax colors.
-    return g.bg or blend(c, base, 0.16), g.bg or blend(c, base, 0.40), blend(c, base, 0.28)
+    if g.bg then
+      -- The theme's own line colour; emphasise changed words by pushing it further toward the hue
+      -- (the git-sign colour, e.g. Added, is a cleaner hue than DiffAdd's fg, which is often a contrast colour).
+      local hue = get(fallback_group).fg or g.fg or fallback_rgb
+      return g.bg, blend(hue, g.bg, 0.30), blend(hue, g.bg, 0.22)
+    end
+    local c = g.fg or get(fallback_group).fg or fallback_rgb
+    return blend(c, base, 0.16), blend(c, base, 0.40), blend(c, base, 0.28)
   end
   local add_bg, add_text_bg = pair("DiffAdd", "Added", 0x40c060)
   local del_bg, del_text_bg, del_cursor_bg = pair("DiffDelete", "Removed", 0xe05050)
@@ -283,34 +290,6 @@ end
 
 local WINBAR_EXPR = "%{%v:lua.require('ryno.review').winbar()%}"
 
--- Common prefix/suffix (UTF-8 safe) between an old and a new line, for intra-line highlighting.
--- Returns nil when the lines share too little for a span to be meaningful.
-local function is_cont(byte)
-  return byte ~= nil and bit.band(byte, 0xC0) == 0x80
-end
-
-local function changed_span(a, b)
-  local n = math.min(#a, #b)
-  local p = 0
-  while p < n and a:byte(p + 1) == b:byte(p + 1) do
-    p = p + 1
-  end
-  while p > 0 and (is_cont(a:byte(p + 1)) or is_cont(b:byte(p + 1))) do
-    p = p - 1
-  end
-  local sfx = 0
-  while sfx < n - p and a:byte(#a - sfx) == b:byte(#b - sfx) do
-    sfx = sfx + 1
-  end
-  while sfx > 0 and (is_cont(a:byte(#a - sfx + 1)) or is_cont(b:byte(#b - sfx + 1))) do
-    sfx = sfx - 1
-  end
-  if (p + sfx) * 10 < math.max(#a, #b) * 4 or (p == 0 and sfx == 0) then
-    return nil
-  end
-  return p, sfx
-end
-
 local function preview(r)
   -- Pending/accepted hunks show the proposed text as real buffer lines, so normal cursor
   -- movement can inspect every line. Rejected hunks revert to the original text in the preview.
@@ -344,8 +323,10 @@ local function syntax_group(buf, row, col)
   return nil, nil
 end
 
-local function syntax_chunks(buf, row, line, base_hl, strong_hl)
-  local chunks, col, active, start = {}, 0, nil, 0
+--- Highlight chunks for a removed line: its syntax colours on the removed background, with the changed
+--- byte ranges `spans` ({ {start, end}, ... }, see diff.inline) emphasised. `selected` = under the virtual cursor.
+local function syntax_chunks(buf, row, line, base_hl, spans, selected)
+  local chunks, col, active, start, k = {}, 0, nil, 0, 1
   while col < #line do
     local group, finish = syntax_group(buf, row, col)
     local next_col = finish and finish > col and finish or (col + 1)
@@ -353,8 +334,17 @@ local function syntax_chunks(buf, row, line, base_hl, strong_hl)
     if next_col == col + 1 then
       while next_col < #line and bit.band(line:byte(next_col + 1), 0xC0) == 0x80 do next_col = next_col + 1 end
     end
-    local changed = strong_hl and strong_hl(col, next_col)
-    local hl_group = syntax_overlay(group, changed)
+    -- Split syntax tokens at the edges of changed spans (a string token may change in one word only).
+    while spans and spans[k] and spans[k][2] <= col do k = k + 1 end
+    local sp, changed = spans and spans[k], false
+    if sp then
+      if col >= sp[1] then
+        changed, next_col = true, math.min(next_col, sp[2])
+      else
+        next_col = math.min(next_col, sp[1])
+      end
+    end
+    local hl_group = syntax_overlay(group, changed or (selected and "cursor") or nil)
     if hl_group ~= active then
       if col > start then chunks[#chunks + 1] = { line:sub(start + 1, col), active } end
       start, active = col, hl_group
@@ -373,26 +363,42 @@ local function attach_row(r, h)
   return math.max(0, math.min(h.display_start - 1, api.nvim_buf_line_count(r.buf) - 1))
 end
 
+--- Expand tabs to the next tab stop, given the display column `col` the text starts at.
+local function expand_tabs(s, col, ts)
+  local out, pos = {}, 1
+  while true do
+    local t = s:find("\t", pos, true)
+    local seg = s:sub(pos, (t or 0) - 1)
+    out[#out + 1] = seg
+    col = col + vim.fn.strdisplaywidth(seg)
+    if not t then break end
+    local n = ts - col % ts
+    out[#out + 1] = string.rep(" ", n)
+    col, pos = col + n, t + 1
+  end
+  return table.concat(out), col
+end
+
 local function virt_chunks(r, h, i, selected)
   local done = h.state == "accepted"
   local base = selected and "RynoDeleteCursor" or (done and "RynoDeleteDone" or "RynoDelete")
-  local winw = api.nvim_win_is_valid(r.win) and api.nvim_win_get_width(r.win) or 80
-  local textoff = api.nvim_win_is_valid(r.win) and (vim.fn.getwininfo(r.win)[1] or {}).textoff or 4
-  local tab = string.rep(" ", vim.bo[r.buf].tabstop)
+  local valid = api.nvim_win_is_valid(r.win)
+  local winw = valid and api.nvim_win_get_width(r.win) or 80
+  local textoff = valid and (vim.fn.getwininfo(r.win)[1] or {}).textoff or 0
   local l = h.old[i]
-  local gutter = (selected and "▶" or (done and "✓" or "-")) .. string.rep(" ", math.max(textoff - 1, 0))
+  -- Virtual lines are drawn from the window's left edge (virt_lines_leftcol): this gutter takes the place
+  -- of the sign/number columns, so the removed text lines up with the buffer text around it.
+  local mark = (selected and "▶" or (done and "✓" or "-"))
+  local gutter = textoff > 0 and (mark .. string.rep(" ", math.max(textoff - vim.fn.strdisplaywidth(mark), 0))) or ""
   local source_row = h.a_start > 0 and (h.a_start - 1 + i - 1) or 0
-  local parts = syntax_chunks(r.syntax_buf, source_row, l, base, function(first, last)
-    if selected then return "cursor" end
-    local sp = h.spans and h.spans[i]
-    return sp and first < #l - sp[2] and last > sp[1]
-  end)
-  local chunks, used = { { gutter, base } }, vim.fn.strdisplaywidth(gutter)
+  local spans = not done and h.old_spans and h.old_spans[i] or nil
+  local parts = syntax_chunks(r.syntax_buf, source_row, l, base, spans, selected)
+  local chunks, col = { { gutter, base } }, 0
   for _, part in ipairs(parts) do
-    part[1] = part[1]:gsub("\t", tab)
+    part[1], col = expand_tabs(part[1], col, vim.bo[r.buf].tabstop)
     chunks[#chunks + 1] = part
-    used = used + vim.fn.strdisplaywidth(part[1])
   end
+  local used = vim.fn.strdisplaywidth(gutter) + col
   chunks[#chunks + 1] = { string.rep(" ", math.max(0, winw - used)), base }
   return chunks
 end
@@ -413,7 +419,7 @@ end
 
 local function place_virt(r, h)
   h.vl_id = api.nvim_buf_set_extmark(r.buf, ns, attach_row(r, h), 0, {
-    id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = false, priority = 4200,
+    id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = true, priority = 4200,
   })
 end
 
@@ -422,6 +428,13 @@ local function set_vpos(r, h, i)
   r.vpos = h and { h = h, i = i } or nil
   if old and old.h ~= h and old.h.vl_id and api.nvim_buf_is_valid(r.buf) then place_virt(r, old.h) end
   if h and h.vl_id and api.nvim_buf_is_valid(r.buf) then place_virt(r, h) end
+  -- Virtual lines above the first buffer line are only drawn as window "filler" (topfill): scroll them
+  -- into view, or a change to line 1 would show no removed lines at all.
+  if h and attach_row(r, h) == 0 and api.nvim_win_is_valid(r.win) then
+    api.nvim_win_call(r.win, function()
+      vim.fn.winrestview({ topline = 1, topfill = #h.old })
+    end)
+  end
 end
 
 local function render(r)
@@ -443,25 +456,28 @@ local function render(r)
     local del_txt, add_txt = done and "RynoDeleteDone" or "RynoDeleteText", done and "RynoAddDone" or "RynoAddText"
     if h.state ~= "rejected" then
       -- Proposed lines are actual buffer lines: readable, searchable, and reachable with j/k/C-d.
-      local spans = {}
-      for i = 1, math.min(h.a_count, h.b_count) do
-        local p, sfx = changed_span(h.old[i], h.new[i])
-        if p then spans[i] = { p, sfx } end
-      end
-      h.spans = spans
+      -- Word-level emphasis on lines that are edits of each other (computed once per hunk).
+      if not h.new_spans then h.old_spans, h.new_spans = diff.inline_hunk(h.old, h.new) end
       for i = 0, h.display_count - 1 do
         local row = h.display_start - 1 + i
+        -- A ranged hl_group (to the end of the screen line) rather than line_hl_group: line_hl_group
+        -- paints over every other highlight on the line, which would hide the word emphasis below.
+        -- (The sign is a separate mark: a multi-row mark shows its sign on every row it touches.)
         api.nvim_buf_set_extmark(buf, ns, row, 0, {
-          line_hl_group = add_hl,
+          end_row = row + 1,
+          end_col = 0,
+          hl_group = add_hl,
+          hl_eol = true,
+          strict = false,
+          priority = 4200,
+        })
+        api.nvim_buf_set_extmark(buf, ns, row, 0, {
           sign_text = done and "✓" or "+",
           sign_hl_group = add_hl,
           priority = 4200,
         })
-        local sp = spans[i + 1]
-        if sp then
-          api.nvim_buf_set_extmark(buf, ns, row, sp[1], {
-            end_col = #h.new[i + 1] - sp[2], hl_group = add_txt, priority = 4300,
-          })
+        for _, sp in ipairs(not done and h.new_spans[i + 1] or {}) do
+          api.nvim_buf_set_extmark(buf, ns, row, sp[1], { end_col = sp[2], hl_group = add_txt, priority = 4300 })
         end
       end
       -- Removed text is virtual above the proposed block (cursorable proposed lines remain in the buffer).
