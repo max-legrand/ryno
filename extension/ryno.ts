@@ -19,7 +19,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -27,6 +27,45 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const PROTOCOL = 1;
+
+/**
+ * Alert the user that a review is waiting. On macOS, play a sound (Rex records a terminal bell but
+ * doesn't make it audible): RYNO_SOUND=<path>, else Rex's own attention sound if it was recorded with
+ * rex/record-rex-sounds.sh, else the system alert sound. RYNO_SOUND=off disables it. Elsewhere, ring
+ * the terminal bell. Returns true when it handled the alert without the bell.
+ */
+const REX_ATTENTION_SOUND = path.join(os.homedir(), ".config", "ryno", "sounds", "attention.caf");
+function playReviewSound(): boolean {
+	const sound = process.env.RYNO_SOUND;
+	if (sound === "off") return true;
+	if (process.platform !== "darwin") return false;
+	try {
+		const file = sound || (fs.existsSync(REX_ATTENTION_SOUND) ? REX_ATTENTION_SOUND : "");
+		const [cmd, args] = file ? ["afplay", [file]] : ["osascript", ["-e", "beep"]];
+		const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+		child.on("error", () => {});
+		child.unref();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** In Rex, ring only when this terminal's pane belongs to the session's active tab. */
+function shouldRingForActiveRexTab(): boolean {
+	const sessionId = process.env.REX_SESSION;
+	const blockId = process.env.REX_BLOCK;
+	if (!sessionId || !blockId) return true; // Outside Rex, retain the normal terminal bell.
+	try {
+		const r = spawnSync("rex", ["session", "inspect", sessionId, "--json"], { encoding: "utf8", timeout: 1000, maxBuffer: 1 << 20 });
+		if (r.status !== 0 || !r.stdout) return false;
+		const view = JSON.parse(r.stdout);
+		const active = (view.windows ?? []).find((window: any) => window.window_id === view.active_window_id);
+		return !!active?.layers?.some((layer: any) => layer.blocks?.some((block: any) => block.block_id === blockId));
+	} catch {
+		return false;
+	}
+}
 
 // ───────────────────────────── pure helpers ─────────────────────────────
 
@@ -343,6 +382,7 @@ interface EditorState {
 	cwd?: string;
 	linked?: boolean; // the user explicitly linked this editor to this session (:RynoLink)
 	lastActive: number; // when we last heard the user doing something in it (our clock)
+	focused?: boolean; // its terminal pane has focus (from terminal focus reports); undefined = unknown
 }
 
 interface Pending {
@@ -359,6 +399,59 @@ export default function ryno(pi: ExtensionAPI) {
 	const clients = new Set<net.Socket>();
 	const editors = new Map<net.Socket, EditorState>();
 	const pending = new Map<string, Pending>();
+
+	// Whether this agent's own terminal pane has focus, from the focus reports (CSI I / CSI O) the
+	// terminal sends while focus reporting (mode 1004) is on, and from keyboard input, which only the
+	// focused pane receives (mouse reports don't count: Rex sends motion to unfocused panes too). Pi
+	// enables focus reporting; we only listen alongside pi's own stdin handler and never consume input.
+	// undefined = nothing seen yet.
+	let terminalFocus: boolean | undefined;
+	const onStdin = (chunk: unknown) => {
+		const s = String(chunk);
+		const i = s.lastIndexOf("\x1b[I");
+		const o = s.lastIndexOf("\x1b[O");
+		if (i >= 0 || o >= 0) terminalFocus = i > o;
+		else if (s && !/^(\x1b\[<[\d;]+[Mm])+$/.test(s)) terminalFocus = true;
+	};
+	let listeningStdin = false;
+	function watchFocus(on: boolean) {
+		if (on === listeningStdin || !process.stdin.isTTY) return;
+		if (on) process.stdin.on("data", onStdin);
+		else process.stdin.off("data", onStdin);
+		listeningStdin = on;
+	}
+
+	/**
+	 * Is the user looking at this agent's tab? True when this pane or a connected editor's pane has
+	 * focus. Rex plays its own sound for tabs you're not looking at, so this is the only case we cover.
+	 * When that can't be known (no focus information for this pane, or a connected editor that doesn't
+	 * report its focus, e.g. vis or an nvim started before this was added), fall back to "this pane is
+	 * in its session's active tab".
+	 */
+	function userIsLooking(): boolean {
+		if (terminalFocus === true || [...editors.values()].some((e) => e.focused === true)) return true;
+		const editorsReportFocus = [...clients].every((c) => editors.get(c)?.focused !== undefined);
+		if (terminalFocus === false && editorsReportFocus) return false;
+		return shouldRingForActiveRexTab();
+	}
+
+	function reportProgramStatus(ring = false) {
+		const current = [...pending.values()].at(-1)?.msg;
+		const text = current ? `Reviewing ${String(current.relpath ?? current.path ?? "a change")}`.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 180) : "Ready for input";
+		const state = current ? "blocked:kind=question" : "idle";
+		const report = `\x1b]7501;state=${state}:app=ryno:msg=${Buffer.from(text, "utf8").toString("base64")}\x1b\\`;
+		try {
+			const bell = ring && !playReviewSound();
+			const write = (globalThis as any).__rynoStatusWrite;
+			if (typeof write === "function") {
+				write(report);
+				if (bell) write("\x07");
+			} else {
+				fs.writeSync(process.stdout.fd, report);
+				if (bell) fs.writeSync(process.stdout.fd, "\x07");
+			}
+		} catch {}
+	}
 	const bashSnapshots = new Map<string, { snap: Snapshot | null; profile?: string; sandboxed: boolean; mode: BashMode }>();
 	let bashMode: BashMode = loadBashMode();
 	let server: net.Server | null = null;
@@ -432,6 +525,7 @@ export default function ryno(pi: ExtensionAPI) {
 		const p = pending.get(id);
 		if (!p) return;
 		pending.delete(id);
+		reportProgramStatus();
 		if (p.timer) clearTimeout(p.timer);
 		p.resolve(d);
 		broadcast({ type: "resolved", id }); // lets other editors drop the review
@@ -485,6 +579,7 @@ export default function ryno(pi: ExtensionAPI) {
 							if (typeof m.cwd === "string") st.cwd = m.cwd;
 							st.linked = m.linked === true;
 							if (m.active) st.lastActive = Date.now();
+							if (typeof m.focused === "boolean") st.focused = m.focused;
 							editors.set(sock, st);
 						}
 					} catch {}
@@ -524,6 +619,7 @@ export default function ryno(pi: ExtensionAPI) {
 		editors.clear();
 		server?.close();
 		server = null;
+		watchFocus(false);
 		for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {}
 	}
 	process.on("exit", () => { for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {} });
@@ -533,6 +629,7 @@ export default function ryno(pi: ExtensionAPI) {
 		bashMode = loadBashMode();
 		info = { cwd: ctx.cwd, sessionId: safe(() => ctx.sessionManager.getSessionId()) ?? "" };
 		start();
+		watchFocus(true);
 		if (server?.listening) writeDescriptor();
 		updateStatus();
 	});
@@ -574,7 +671,9 @@ export default function ryno(pi: ExtensionAPI) {
 		const id = msg.id;
 		return new Promise<Decision | SystemReject>((resolve) => {
 			const p: Pending = { msg, resolve };
+			const firstPending = pending.size === 0;
 			pending.set(id, p);
+			reportProgramStatus(firstPending && userIsLooking());
 			opts.signal?.addEventListener("abort", () => settle(id, { action: "reject", reason: "aborted", system: true }), { once: true });
 			route(p);
 			const ms = Number(opts.timeoutMs ?? process.env.RYNO_TIMEOUT_MS);

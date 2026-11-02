@@ -20,6 +20,8 @@ process.env.RYNO_TIMEOUT_MS ??= "55000";
 process.env.RYNO_AGENT ??= "prime-agent";
 
 const handlers: Record<string, (e: any, c: any) => Promise<any> | any> = {};
+// stdout is the prime-agent JSON-RPC channel; status escapes belong on the user's terminal instead.
+(globalThis as any).__rynoStatusWrite = (report: string) => process.stderr.write(report);
 ryno({ on: (name: string, h: any) => void (handlers[name] = h) } as any);
 
 let cwd = process.cwd();

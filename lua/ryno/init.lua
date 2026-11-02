@@ -9,14 +9,18 @@ local defaults = {
   match_cwd = true, -- only auto-connect to agents running in (a parent/child of) our cwd
   auto_accept = false, -- accept everything without review (toggle with :RynoAuto)
   focus = true, -- jump to the reviewed window
+  focus_pane = true, -- in Rex, focus this nvim's pane when a review opens (only within the active tab)
   open = "current", -- where the review opens: "current" window, "split", "vsplit", or a new "tab"
   review_in_file = false, -- preview in the loaded, unmodified file buffer instead of a .ryno preview buffer
   ask_reason = false, -- prompt for a reason when rejecting everything
+  -- After deciding the last hunk one by one, wait for keys.send instead of sending right away
+  -- (accept all / reject all always send immediately).
+  confirm_send = false,
   -- Don't auto-connect nvims that were opened as a throwaway $EDITOR (`jj desc`, `git commit`, rebase
   -- todo...), so they never steal a review. Decided once from the files nvim was started with.
   -- Manual :RynoConnect / :RynoLink still work. Also off when $RYNO_DISABLE is set.
   exclude_filetypes = { "jjdescription", "gitcommit", "gitrebase" },
-  exclude_patterns = { "%.jjdescription$", "COMMIT_EDITMSG$", "MERGE_MSG$", "TAG_EDITMSG$", "git%-rebase%-todo$", "/pi%-editor%-" }, -- Lua patterns on the full path
+  exclude_patterns = { "%.jjdescription$", "COMMIT_EDITMSG$", "MERGE_MSG$", "TAG_EDITMSG$", "git%-rebase%-todo$", "/pi%-editor%-", "rex%-scrollback%.txt$", "command%-line%.fish$" }, -- Lua patterns on the full path
   exclude = nil, -- optional function() -> boolean for custom rules (true = don't auto-connect)
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
   keys = {
@@ -28,6 +32,7 @@ local defaults = {
     prev = "[c",
     undo = "<leader>iu",
     comment = "<leader>ic",
+    send = "<leader>is", -- send the decision (with confirm_send)
   },
 }
 
@@ -36,6 +41,8 @@ local conns = {} ---@type table<integer, RynoConn>  pid -> connection (one per m
 local links = {} ---@type table<integer, boolean>  pids this nvim was manually linked to (exclusive when non-empty)
 local timer
 local ready = false
+local auto_connect_paused = false
+local has_focus = nil -- does nvim's terminal pane have focus (FocusGained/FocusLost)? nil = unknown
 
 local function notify(msg, level)
   vim.notify("ryno: " .. msg, level or vim.log.levels.INFO)
@@ -79,7 +86,7 @@ local function state_msg(active)
       end
     end
   end
-  return { type = "editor", cwd = vim.fn.getcwd(), files = files, active = active or nil, linked = next(links) ~= nil }
+  return { type = "editor", cwd = vim.fn.getcwd(), files = files, active = active or nil, linked = next(links) ~= nil, focused = has_focus }
 end
 
 local function send_state(active)
@@ -119,7 +126,10 @@ end
 
 --- Connect to every agent whose cwd matches ours (or, with `pick`, choose one from all agents).
 ---@return boolean found
-function M.connect(pick)
+function M.connect(pick, automatic)
+  if not automatic then
+    auto_connect_paused = false
+  end
   local cwd = (M.config.match_cwd and not pick) and vim.fn.getcwd() or nil
   local found = client.discover(cwd)
   if next(links) then
@@ -229,6 +239,7 @@ function M.unlink()
 end
 
 function M.disconnect()
+  auto_connect_paused = true
   for _, c in pairs(conns) do
     c.close()
   end
@@ -313,8 +324,8 @@ end
 
 local function poll()
   -- explicit links always win over the exclusion
-  if ready and (next(links) or not M.excluded()) then
-    M.connect(false) -- picks up agents that started later; already-connected ones are skipped
+  if ready and not auto_connect_paused and (next(links) or not M.excluded()) then
+    M.connect(false, true) -- picks up agents that started later; already-connected ones are skipped
   end
 end
 
@@ -342,7 +353,16 @@ function M.setup(opts)
         send_state(a)
       end))
     end
-    vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "WinEnter", "CursorMoved", "InsertEnter" }, {
+    -- Focus changes are sent at once: the agent uses them to decide whether to play a sound for a
+    -- review (only when you're looking at this tab; Rex covers the others).
+    vim.api.nvim_create_autocmd({ "FocusGained", "FocusLost" }, {
+      group = M._state_aug,
+      callback = function(ev)
+        has_focus = ev.event == "FocusGained"
+        send_state(has_focus)
+      end,
+    })
+    vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "CursorMoved", "InsertEnter" }, {
       group = M._state_aug,
       callback = function() ping(true) end,
     })

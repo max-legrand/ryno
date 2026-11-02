@@ -100,10 +100,13 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 | `<leader>iA` / `<leader>iR` | accept / reject all remaining hunks |
 | `<leader>iu` | undo the decision for the hunk under the cursor (returns it to pending) |
 | `<leader>ic` | comment on and reject the hunk under the cursor (or edit a rejected hunk's comment); included in the agent's feedback |
-| `]c` / `[c` | next / previous pending hunk (lands on its first removed line) |
+| `]c` / `[c` | next / previous hunk, including accepted/rejected ones (lands on its first removed line; shows a decided hunk's state and comment) |
+| `<leader>is` | send the decision once every hunk is decided (only needed with `confirm_send=true`) |
 | `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
 
-When no hunks are pending the decision is sent. All accepted → the agent's edit runs untouched. All
+When no hunks are pending the decision is sent. With `confirm_send=true`, deciding the last hunk one at a
+time instead leaves the review open (winbar: `ready to send`) so you can still revisit, undo or comment;
+send with `<leader>is` / `:RynoSend`. Accept all / reject all always send immediately. All accepted → the agent's edit runs untouched. All
 rejected → blocked. Mixed → the accepted hunks are written by the extension and the agent's call is
 blocked with an explanation. The review buffer is read-only and cursorable; the real file buffer (including any unsaved changes)
 is left untouched. After the agent applies an accepted change, nvim opens/reloads the file.
@@ -114,21 +117,25 @@ sends its reviews to the linked nvim before any other. `:RynoUnlink` goes back t
 links are forgotten when the session exits. The statusline shows `ryno⚭` while linked.
 
 Commands: `:RynoLink [pid]` `:RynoUnlink` `:RynoConnect[!]` `:RynoDisconnect` `:RynoStatus` `:RynoAuto` (toggle auto-accept)
-`:RynoAccept` `:RynoReject` `:RynoAcceptAll` `:RynoRejectAll` `:RynoNext` `:RynoPrev`.
+`:RynoAccept` `:RynoReject` `:RynoAcceptAll` `:RynoRejectAll` `:RynoNext` `:RynoPrev` `:RynoSend`.
 Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes the bash policy for this pi session; it does not persist the setting. Your local install sets the review keys to `<leader>i…` because `<leader>a` is used by Harpoon.
 
 `:RynoAuto` is **ryno's** auto-accept toggle: while on, nvim accepts every incoming file-change review without asking. It is independent of pi's “auto-confirm shell commands” setting. Auto-confirming bash/read/git commands does not turn on `:RynoAuto` or bypass ryno's `edit`/`write` reviews. In bash `block` mode, the shell write restrictions still apply. Leave `:RynoAuto` off if every file change must be reviewed.
 
 `open` chooses where the review appears: `"current"` (default; reuses the current window), `"split"`, `"vsplit"`, or `"tab"`. A split/tab is opened from the window showing the file and closed when the review ends (focus returns to where you were). With `focus=false` the new window opens without taking focus. Set `review_in_file=true` to preview in the actual file buffer instead of a `.ryno` preview buffer; if the file isn't already loaded, ryno loads it for review. The preview is read-only and restored before the decision is sent; unsaved buffers fall back to a separate preview.
 
-Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true,
-open="current", ask_reason=false, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
-reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic"}`.
+In Rex, `focus_pane` also moves keyboard focus to nvim's pane when a review opens (e.g. from the pi pane
+beside it), but only when nvim's pane is in its session's active tab; it never switches tabs. Keys you
+were typing elsewhere then go to nvim, so set `focus_pane=false` if that gets in the way.
+
+Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true, focus_pane=true,
+open="current", ask_reason=false, confirm_send=false, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
+reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic", send="<leader>is"}`.
 
 **Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not
 auto-connected, so it can't grab a review. It's decided once at startup, from the files nvim was opened with:
 `exclude_filetypes={"jjdescription","gitcommit","gitrebase"}`, `exclude_patterns` (Lua patterns on the path,
-e.g. `"%.jjdescription$"`, `"COMMIT_EDITMSG$"`; pi's `/tmp/pi-editor-*` and macOS `$TMPDIR/pi-editor-*` paths are excluded by default), or your own `exclude=function() return … end`. Set
+e.g. `"%.jjdescription$"`, `"COMMIT_EDITMSG$"`; pi's `/tmp/pi-editor-*` and macOS `$TMPDIR/pi-editor-*` paths, `rex-scrollback.txt`, and fish's temporary `command-line.fish`, are excluded by default), or your own `exclude=function() return … end`. Set
 `RYNO_DISABLE=1` to keep any one nvim out. `:RynoConnect` / `:RynoLink` still work there if you ask.
 
 ## Using it (vis)
@@ -136,6 +143,29 @@ e.g. `"%.jjdescription$"`, `"COMMIT_EDITMSG$"`; pi's `/tmp/pi-editor-*` and macO
 `:ryno-accept` (`<M-y>`) · `:ryno-reject [reason]` (`<M-n>`) · `:ryno-connect` · `:ryno-status` · `:ryno-auto`.
 Needs `vis:communicate` and `nc -U` (or `socat`). Auto-connects at startup and when a window opens
 (vis has no timers), otherwise `:ryno-connect`.
+
+## Rex sound when a review is waiting
+
+Ryno reports each waiting review to Rex as a `blocked` program status, and Rex plays its attention
+sound for it, but only for tabs you aren't looking at. So when the first editor review starts
+waiting, Ryno plays a sound itself only while you're looking at its tab: the agent's pane or a
+connected nvim's pane has focus. Focus comes from terminal focus reports (which pi and nvim turn on)
+and from keyboard input to the agent's pane; with neither yet, Ryno falls back to checking that its
+pane is in its Rex session's active tab.
+
+Known gap: Rex doesn't tell panes when you switch to *another session* (it does for other tabs), so
+from another session you can hear both Rex's sound and Ryno's.
+
+The sound is Rex's own attention sound if you've recorded it. Rex synthesizes its sounds rather than
+shipping files, so record them once, from a terminal inside Rex (not from an agent's sandbox):
+
+```sh
+sh rex/record-rex-sounds.sh   # writes ~/.config/ryno/sounds/{attention,success,error}.caf
+```
+
+It builds a small capture app from `rex/capture-sound.swift`; macOS asks once for the System Audio
+Recording permission. Without a recording, Ryno plays the system alert sound. `RYNO_SOUND=/path/to/file`
+plays another file, `RYNO_SOUND=off` turns it off. Outside macOS Ryno rings the terminal bell.
 
 ## Behaviour & limits — read these
 

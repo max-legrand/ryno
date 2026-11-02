@@ -123,6 +123,38 @@ end
 
 local OPEN_CMDS = { split = "belowright split", vsplit = "belowright vsplit", tab = "tab split" }
 
+--- In Rex, give keyboard focus to this nvim's pane when a review opens (`config.focus_pane`), but
+--- only if the pane is in its session's active tab: never switch tabs. Asynchronous, errors ignored.
+local function focus_rex_pane()
+  local session, block = vim.env.REX_SESSION, vim.env.REX_BLOCK
+  if not M.config.focus_pane or (session or "") == "" or (block or "") == "" or vim.fn.executable("rex") == 0 then
+    return
+  end
+  vim.system({ "rex", "session", "inspect", session, "--json" }, { text = true }, vim.schedule_wrap(function(r)
+    local ok, view = pcall(vim.json.decode, r.stdout or "")
+    if r.code ~= 0 or not ok or type(view) ~= "table" then
+      return
+    end
+    for _, w in ipairs(view.windows or {}) do
+      if w.window_id == view.active_window_id then
+        if w.focused_block_id == block then
+          return -- already focused
+        end
+        for _, layer in ipairs(w.layers or {}) do
+          for _, b in ipairs(layer.blocks or {}) do
+            if b.block_id == block then
+              local args = vim.json.encode({ session_id = session, block_id = block })
+              vim.system({ "rex", "api", "call", "session.focus_block", args }, { text = true })
+              return
+            end
+          end
+        end
+        return -- our pane is in another tab: leave it
+      end
+    end
+  end))
+end
+
 --- Window to show the review in, per `config.open`:
 ---   "current" (default) reuse the current/matching window; "split" / "vsplit" / "tab" open a new one.
 --- New windows are closed again when the review ends. Returns win, opened(bool), origin_win.
@@ -240,10 +272,15 @@ winbar_impl = function()
     if rej > 0 then
       parts[#parts + 1] = { rej .. "✗ ", "RynoWinbarNo" }
     end
-    parts[#parts + 1] = { pend .. " pending", "RynoWinbarDim" }
+    if pend == 0 then
+      parts[#parts + 1] = { "ready to send", "RynoWinbarOk" } -- confirm_send: waiting for the send key
+    else
+      parts[#parts + 1] = { pend .. " pending", "RynoWinbarDim" }
+    end
     return parts
   end
   local function hint(key, what)
+    if not key or key == "" then return {} end
     return { { show(key), "RynoWinbarKey" }, { " " .. what .. "  ", "RynoWinbarDim" } }
   end
   local function join(...)
@@ -262,7 +299,12 @@ winbar_impl = function()
   if r.msg.post then
     yes, no, yes_all, no_all = "keep", "roll back", "keep all", "roll back all"
   end
-  local rights = {
+  local rights = pend == 0 and {
+    join(hint(k.send, "send"), hint(k.undo, "undo"), hint(k.comment, "comment"), hint(k.next .. "/" .. k.prev, "jump")),
+    join(hint(k.send, "send"), hint(k.undo, "undo")),
+    hint(k.send, "send"),
+    {},
+  } or {
     join(
       hint(k.accept, yes), hint(k.reject, no),
       hint(k.accept_all, yes_all), hint(k.reject_all, no_all),
@@ -580,13 +622,46 @@ local function vmove(r, dir)
   end
 end
 
-local function step(r, dir)
+--- Echo a decided hunk's state (and comment) when navigation lands on it; clear the echo otherwise.
+--- Kept to one screen line (v:echospace) so it never triggers a hit-enter prompt.
+local function announce(r, h)
+  local chunks = {}
+  if h.state == "accepted" then
+    chunks = { { r.msg.post and "✓ kept" or "✓ accepted", "DiagnosticOk" } }
+  elseif h.state == "rejected" then
+    chunks = { { r.msg.post and "✗ rolled back" or "✗ rejected", "DiagnosticError" } }
+    if h.comment then
+      local text = h.comment:gsub("%s*\n%s*", " ↵ ")
+      chunks[#chunks + 1] = { ": ", "Comment" }
+      chunks[#chunks + 1] = { text, "Normal" }
+    end
+  end
+  local room, out = vim.v.echospace - 1, {}
+  for _, c in ipairs(chunks) do
+    if room < 2 then break end
+    local text = c[1]
+    if vim.fn.strdisplaywidth(text) > room then
+      local n = vim.fn.strchars(text)
+      repeat
+        n = n - 1
+        text = vim.fn.strcharpart(c[1], 0, n) .. "…"
+      until n <= 0 or vim.fn.strdisplaywidth(text) <= room
+    end
+    out[#out + 1] = { text, c[2] }
+    room = room - vim.fn.strdisplaywidth(text)
+  end
+  api.nvim_echo(out, false, {})
+end
+
+--- Jump to the next/previous hunk. `pending_only` skips decided (accepted/rejected/commented) hunks:
+--- used for the auto-advance after a decision, while ]c/[c visit every hunk.
+local function step(r, dir, pending_only)
   local n, row = api.nvim_buf_line_count(r.buf), cursor_row(r)
   local function start(h)
     return h.display_count > 0 and h.display_start or math.max(1, math.min(h.display_start, n))
   end
   local pend = vim.tbl_filter(function(h)
-    return h.state == "pending"
+    return not pending_only or h.state == "pending"
   end, r.hunks)
   if #pend == 0 then
     return
@@ -610,6 +685,7 @@ local function step(r, dir)
     target = target or pend[#pend]
   end
   goto_hunk(r, target)
+  announce(r, target)
 end
 
 -- ───────────────────────── lifecycle ─────────────────────────
@@ -695,15 +771,40 @@ local function conclude(r, action, extra)
   vim.schedule(start_next)
 end
 
-local function maybe_conclude(r, extra)
-  local acc, _, pend = diff.counts(r.hunks)
-  if pend > 0 then
-    render(r)
-    return false
-  end
+local function send_decision(r, extra)
+  local acc = diff.counts(r.hunks)
   local action = (acc == #r.hunks) and "accept" or (acc == 0 and "reject" or "partial")
   conclude(r, action, extra)
+end
+
+--- Send the decision once no hunks are pending. `manual` = the last hunk was decided one at a time
+--- (not accept/reject all): with `config.confirm_send` the review then waits for the send key instead,
+--- so decisions and comments can still be revisited.
+local function maybe_conclude(r, extra, manual)
+  local _, _, pend = diff.counts(r.hunks)
+  if pend > 0 or (manual and M.config.confirm_send) then
+    render(r)
+    if pend == 0 then
+      local k = M.config.keys
+      api.nvim_echo({
+        { "ryno: all hunks decided, ", "Normal" },
+        { show(k.send or ""), "Special" }, { " to send, ", "Normal" },
+        { show(k.undo or ""), "Special" }, { " to change a decision", "Normal" },
+      }, false, {})
+    end
+    return false
+  end
+  send_decision(r, extra)
   return true
+end
+
+local function send_here(r)
+  local _, _, pend = diff.counts(r.hunks)
+  if pend > 0 then
+    vim.notify(("ryno: %d hunk%s still pending"):format(pend, pend == 1 and "" or "s"), vim.log.levels.INFO)
+    return
+  end
+  send_decision(r)
 end
 
 local function undo_here(r)
@@ -754,7 +855,7 @@ local function comment_here(r)
     if submit and text ~= nil and M.active == r and not r.concluded then
       h.comment = text ~= "" and text or nil
       h.state = "rejected"
-      if not maybe_conclude(r) then step(r, 1) end
+      if not maybe_conclude(r, nil, true) then step(r, 1, true) end
     end
   end
   vim.keymap.set({ "n", "i" }, "<C-s>", function() finish(true) end, { buffer = buf, nowait = true, silent = true })
@@ -769,8 +870,8 @@ local function decide_here(r, state)
   end
   r.vpos = nil
   h.state = state
-  if not maybe_conclude(r) then
-    step(r, 1)
+  if not maybe_conclude(r, nil, true) then
+    step(r, 1, true)
   end
 end
 
@@ -809,6 +910,7 @@ local function set_keys(r)
   map(k.prev, function() step(r, -1) end, "previous hunk")
   map(k.undo, function() undo_here(r) end, "undo hunk decision")
   map(k.comment, function() comment_here(r) end, "comment on rejected hunk")
+  map(k.send, function() send_here(r) end, "send decision")
   -- j/k also walk through the removed (virtual) lines
   map("j", function() vmove(r, 1) end, "down (through removed lines)")
   map("k", function() vmove(r, -1) end, "up (through removed lines)")
@@ -841,6 +943,7 @@ local function begin(r)
   end
 
   r.win, r.opened, r.origin_win = open_window(r.msg.path)
+  focus_rex_pane()
   r.prev_buf = api.nvim_win_get_buf(r.win)
   r.was_winbar = api.nvim_get_option_value("winbar", { win = r.win })
   if M.config.focus then
@@ -1015,6 +1118,7 @@ M.accept_all = with_active(function(r) decide_all(r, "accepted") end)
 M.reject_all = with_active(function(r) decide_all(r, "rejected") end)
 M.next_hunk = with_active(function(r) step(r, 1) end)
 M.prev_hunk = with_active(function(r) step(r, -1) end)
+M.send_review = with_active(send_here)
 
 function M.pending_count()
   return (M.active and 1 or 0) + #M.queue
