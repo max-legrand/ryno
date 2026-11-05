@@ -65,6 +65,10 @@ local function hl()
   set("RynoDeleteCursor", { bg = del_cursor_bg, bold = true }) -- removed line under the virtual cursor
   set("RynoAddDone", { bg = change_bg })
   set("RynoDeleteDone", { bg = change_bg })
+  -- rejected hunks: the original text stays (✗ signs), the rejected proposal is shown struck through
+  set("RynoRejected", { fg = get("Comment").fg, strikethrough = true })
+  set("RynoRejectedSign", { fg = get("DiagnosticError").fg or get("ErrorMsg").fg, bold = true })
+  set("RynoRejectedComment", { fg = get("DiagnosticWarn").fg or get("WarningMsg").fg, italic = true })
   syntax_overlay_cache = {}
 
   -- Winbar: same background as WinBar so nothing looks like a boxed button.
@@ -459,6 +463,53 @@ local function hunk_virt_lines(r, h)
   return vl
 end
 
+local MAX_REJECTED_LINES = 12 -- rejected proposal lines shown before collapsing into "… N more"
+
+--- Virtual lines for a rejected hunk: a "✗ rejected: comment" header, then the rejected proposed lines
+--- (struck through). Drawn above the original lines that the rejection keeps.
+local function rejected_virt(r, h)
+  local valid = api.nvim_win_is_valid(r.win)
+  local textoff = valid and (vim.fn.getwininfo(r.win)[1] or {}).textoff or 0
+  local function gutter(mark)
+    return textoff > 0 and (mark .. string.rep(" ", math.max(textoff - vim.fn.strdisplaywidth(mark), 0))) or ""
+  end
+  local ts = vim.bo[r.buf].tabstop
+  local comment = h.comment and vim.split(h.comment, "\n", { plain = true }) or {}
+  local head = { { gutter("✗"), "RynoRejectedSign" }, { r.msg.post and "rolled back" or "rejected", "RynoRejectedSign" } }
+  if comment[1] then
+    head[#head + 1] = { ": " .. expand_tabs(comment[1], 0, ts), "RynoRejectedComment" }
+  end
+  local vl = { head }
+  for i = 2, #comment do
+    vl[#vl + 1] = { { gutter(""), "RynoRejectedComment" }, { "  " .. expand_tabs(comment[i], 0, ts), "RynoRejectedComment" } }
+  end
+  for i, l in ipairs(h.new) do
+    if i > MAX_REJECTED_LINES then
+      local more = #h.new - MAX_REJECTED_LINES
+      vl[#vl + 1] = { { gutter(""), "RynoRejected" }, { ("… %d more line%s"):format(more, more == 1 and "" or "s"), "Comment" } }
+      break
+    end
+    vl[#vl + 1] = { { gutter("~"), "RynoRejectedSign" }, { (expand_tabs(l, 0, ts)), "RynoRejected" } }
+  end
+  return vl
+end
+
+local function place_rejected(r, h)
+  local n = api.nvim_buf_line_count(r.buf)
+  local vl = rejected_virt(r, h)
+  -- above the kept lines (or the line after a rejected insertion); below the last line at EOF
+  local above = h.display_start <= n
+  h.rej_n, h.rej_above = #vl, above
+  api.nvim_buf_set_extmark(r.buf, ns, above and math.max(0, h.display_start - 1) or math.max(0, n - 1), 0, {
+    virt_lines = vl, virt_lines_above = above, virt_lines_leftcol = true, priority = 4200,
+  })
+  for i = 0, h.display_count - 1 do
+    api.nvim_buf_set_extmark(r.buf, ns, h.display_start - 1 + i, 0, {
+      sign_text = "✗", sign_hl_group = "RynoRejectedSign", priority = 4200,
+    })
+  end
+end
+
 local function place_virt(r, h)
   h.vl_id = api.nvim_buf_set_extmark(r.buf, ns, attach_row(r, h), 0, {
     id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = true, priority = 4200,
@@ -526,6 +577,8 @@ local function render(r)
       if #h.old > 0 then
         place_virt(r, h)
       end
+    else
+      place_rejected(r, h)
     end
   end
 
@@ -572,6 +625,12 @@ local function goto_hunk(r, h)
     set_vpos(r, h, 1)
   else
     set_vpos(r, nil)
+    -- a rejected hunk's header above line 1 is only drawn as window filler: scroll it into view
+    if h.state == "rejected" and h.rej_above and h.display_start <= 1 and api.nvim_win_is_valid(r.win) then
+      api.nvim_win_call(r.win, function()
+        vim.fn.winrestview({ topline = 1, topfill = h.rej_n or 0 })
+      end)
+    end
   end
 end
 

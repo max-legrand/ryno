@@ -104,6 +104,9 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 | `<leader>is` | send the decision once every hunk is decided (only needed with `confirm_send=true`) |
 | `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
 
+Decided hunks stay visible: accepted ones are tinted and marked `✓`; a rejected hunk keeps the original
+lines (marked `✗`) with a `✗ rejected: <comment>` header and the rejected proposal struck through above them.
+
 When no hunks are pending the decision is sent. With `confirm_send=true`, deciding the last hunk one at a
 time instead leaves the review open (winbar: `ready to send`) so you can still revisit, undo or comment;
 send with `<leader>is` / `:RynoSend`. Accept all / reject all always send immediately. All accepted → the agent's edit runs untouched. All
