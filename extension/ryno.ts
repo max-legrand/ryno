@@ -11,6 +11,7 @@
  *   prime-agent:  ~/.prime/agent/extensions/ryno.ts
  *
  * Env:
+ *   RYNO_MODE=edit|review       edit with approval, or research/review only (default: edit)
  *   RYNO_NO_EDITOR=allow|block   what to do when no editor is connected (default: allow)
  *   RYNO_DIR=<dir>               discovery dir (default: /tmp/ryno-<uid>)
  *   RYNO_TIMEOUT_MS=<ms>         give up on a review after this long and reject (default: none)
@@ -294,6 +295,67 @@ export function loadBashMode(): BashMode {
 	return "review";
 }
 
+export type RynoMode = "edit" | "review";
+const RYNO_MODES: RynoMode[] = ["edit", "review"];
+
+export function loadRynoMode(): RynoMode {
+	const env = process.env.RYNO_MODE as RynoMode | undefined;
+	if (env && RYNO_MODES.includes(env)) return env;
+	try {
+		const s = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+		if (RYNO_MODES.includes(s?.mode)) return s.mode;
+	} catch {}
+	return "edit";
+}
+
+/** Persist only the mode, keeping unrelated settings and refusing to overwrite invalid JSON. */
+export function saveRynoMode(mode: RynoMode): void {
+	const file = settingsPath();
+	let settings: Record<string, unknown> = {};
+	try {
+		settings = JSON.parse(fs.readFileSync(file, "utf8"));
+		if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+			throw new Error("settings must be a JSON object");
+		}
+	} catch (err: any) {
+		if (err?.code !== "ENOENT") throw err;
+	}
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	const temp = `${file}.${randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(temp, JSON.stringify({ ...settings, mode }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+		fs.renameSync(temp, file);
+	} finally {
+		try { fs.unlinkSync(temp); } catch {}
+	}
+}
+
+export const REVIEW_PROMPT =
+	"Ryno review mode (enforced): you are a researcher and code reviewer, NOT an editor. " +
+	"The user wants to practice implementing changes themselves. Never create, modify, delete, or apply files, " +
+	"propose patches/diffs or complete replacement implementations, delegate implementation, or bypass the tool gate. " +
+	"Research the code, then explain: Where (file paths, symbols and relevant lines), Why (cause or design tradeoffs), " +
+	"What to change (small conceptual steps, not copy-paste solutions), and How to verify (tests and edge cases). " +
+	"Give focused hints first, with more explanation when requested. Leave implementation to the user and wait. " +
+	"When the user asks for review after saving their changes, re-read the current files from disk rather than relying on earlier reads. " +
+	"Compare with the intended behavior and previous guidance, report actionable findings with paths/lines, explain what is correct, " +
+	"and suggest the next step without fixing anything. Distinguish verified behavior from unrun tests. " +
+	"Only read/search/list tools and, where supported, a strictly read-only shell are available; " +
+	"ask the user to run tests that need writable caches or outputs. Guidance and findings belong in chat, not an edit approval buffer.";
+
+export const REVIEW_REQUEST =
+	"I have made and saved my changes. Stay in ryno review mode: re-read the relevant files from disk and review my implementation " +
+	"against our previous discussion. Identify correctness issues, regressions, and missing tests with file/line references. " +
+	"Explain your reasoning and give hints for anything left to change, but do not edit files or provide a replacement patch. " +
+	"If the scope is unclear, ask which files to review. Unsaved editor buffers are not available.";
+
+export const REVIEW_BLOCK_REASON =
+	"ryno: review mode is research/review only. This call was NOT run. Explain where, why, and what the user should change, " +
+	"then wait for them to implement it. Do not retry via another tool or delegate edits.";
+
+// Deliberately closed: unknown/custom tools can write or delegate, even if their name sounds read-only.
+const REVIEW_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
 export const BLOCK_PROMPT =
 	"File-change policy (enforced): do NOT create, modify or delete project files from bash or python " +
 	"(no heredoc rewrites, `sed -i`, `open(…, 'w')`, `>` redirects, `mv`/`rm` of project files, formatters that rewrite files). " +
@@ -317,6 +379,13 @@ function canSandbox(): boolean {
 
 const shq = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
 const sbq = (s: string) => '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+
+/** No git dependency, ignored-file exceptions, snapshots, or rollback of the user's own saves. */
+export function reviewShellCommand(command: string): string | null {
+	if (!canSandbox()) return null;
+	const profile = "(version 1)(allow default)(deny file-write*)(deny network*)";
+	return `${SANDBOX_EXEC} -p ${shq(profile)} /bin/bash --noprofile --norc -c ${shq(command)}`;
+}
 
 /**
  * Wrap a bash command so it cannot write any file git knows about (tracked + untracked, not ignored).
@@ -454,6 +523,7 @@ export default function ryno(pi: ExtensionAPI) {
 	}
 	const bashSnapshots = new Map<string, { snap: Snapshot | null; profile?: string; sandboxed: boolean; mode: BashMode }>();
 	let bashMode: BashMode = loadBashMode();
+	let rynoMode: RynoMode = loadRynoMode();
 	let server: net.Server | null = null;
 	let info = { cwd: process.cwd(), sessionId: "" };
 	let uiRef: any = null;
@@ -516,7 +586,8 @@ export default function ryno(pi: ExtensionAPI) {
 		try {
 			const parts = [];
 			if (clients.size) parts.push(`${clients.size} editor${clients.size > 1 ? "s" : ""}`);
-			if (bashMode === "block") parts.push("bash read-only");
+			if (rynoMode === "review") parts.push("REVIEW ONLY");
+			else if (bashMode === "block") parts.push("bash read-only");
 			uiRef?.setStatus?.("ryno", parts.length ? `ryno: ${parts.join(" · ")}` : undefined);
 		} catch {}
 	};
@@ -624,9 +695,36 @@ export default function ryno(pi: ExtensionAPI) {
 	}
 	process.on("exit", () => { for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {} });
 
+	const saveSessionSettings = (mode = rynoMode, bash = bashMode) => {
+		pi.appendEntry?.("ryno-settings", { mode, bash });
+	};
+	function restoreSessionSettings(ctx: any) {
+		const defaults = (pi.getSettings?.() as { ryno?: { mode?: RynoMode; bash?: BashMode } } | undefined)?.ryno;
+		rynoMode = RYNO_MODES.includes(process.env.RYNO_MODE as RynoMode) ? loadRynoMode()
+			: RYNO_MODES.includes(defaults?.mode) ? defaults.mode : loadRynoMode();
+		bashMode = BASH_MODES.includes(process.env.RYNO_BASH as BashMode) ? loadBashMode()
+			: BASH_MODES.includes(defaults?.bash) ? defaults.bash : loadBashMode();
+		let restored = false;
+		for (const entry of ctx.sessionManager.getBranch?.() ?? []) {
+			if (entry.type !== "custom" || entry.customType !== "ryno-settings") continue;
+			if (RYNO_MODES.includes(entry.data?.mode) && BASH_MODES.includes(entry.data?.bash)) {
+				rynoMode = entry.data.mode;
+				bashMode = entry.data.bash;
+				restored = true;
+			}
+		}
+		// Capture defaults once so changing them doesn't change an existing session on resume.
+		if (!restored) saveSessionSettings();
+	}
+
+	pi.on("session_tree", async (_e: any, ctx: any) => {
+		restoreSessionSettings(ctx);
+		updateStatus();
+	});
+
 	pi.on("session_start", async (_e: any, ctx: any) => {
 		uiRef = ctx.ui;
-		bashMode = loadBashMode();
+		restoreSessionSettings(ctx);
 		info = { cwd: ctx.cwd, sessionId: safe(() => ctx.sessionManager.getSessionId()) ?? "" };
 		start();
 		watchFocus(true);
@@ -637,21 +735,63 @@ export default function ryno(pi: ExtensionAPI) {
 	// pi may build a *fresh* extension instance for /new, /resume, /fork and /reload, so this instance
 	// must not outlive its session: an orphaned server keeps editors attached to a handler nobody runs.
 	pi.on("before_agent_start", async (event: any) => {
-		if (bashMode !== "block" || typeof event?.systemPrompt !== "string") return;
-		return { systemPrompt: event.systemPrompt + "\n\n" + BLOCK_PROMPT };
+		if (typeof event?.systemPrompt !== "string") return;
+		const prompt = rynoMode === "review" ? REVIEW_PROMPT : bashMode === "block" ? BLOCK_PROMPT : null;
+		if (prompt) return { systemPrompt: event.systemPrompt + "\n\n" + prompt };
+	});
+
+	pi.registerCommand?.("ryno-mode", {
+		description: "ryno: set this session's mode (edit | review)",
+		handler: async (args: string, ctx: any) => {
+			const a = (args ?? "").trim() as RynoMode;
+			if (a && !RYNO_MODES.includes(a)) return ctx.ui.notify(`ryno: unknown mode "${a}" (edit | review)`, "error");
+			if (a && (pending.size || (ctx.isIdle && !ctx.isIdle()))) {
+				return ctx.ui.notify("ryno: wait for the agent to finish or abort it before changing mode", "warning");
+			}
+			if (a) {
+				try { saveSessionSettings(a); }
+				catch (err: any) {
+					return ctx.ui.notify(`ryno: could not save session settings: ${err?.message ?? err}. Mode unchanged.`, "error");
+				}
+				rynoMode = a;
+			}
+			updateStatus();
+			ctx.ui.notify(`ryno mode: ${rynoMode}. ` + (rynoMode === "review"
+				? "You implement; the agent gives guidance and feedback in chat. Save your changes, then /ryno-review [scope]."
+				: "Normal edit approvals restored.") + " Settings belong to this session. New-session defaults: ryno in Pi settings.json.", "info");
+		},
+	});
+
+	pi.registerCommand?.("ryno-review", {
+		description: "ryno: review your saved implementation without editing ([files or focus])",
+		handler: async (args: string, ctx: any) => {
+			if (rynoMode !== "review") return ctx.ui.notify("ryno: first enable /ryno-mode review", "warning");
+			if (ctx.isIdle && !ctx.isIdle()) return ctx.ui.notify("ryno: wait for the agent to finish or abort it before requesting review", "warning");
+			pi.sendUserMessage(REVIEW_REQUEST + (args?.trim() ? `\n\nReview scope / user note: ${args.trim()}` : ""));
+		},
 	});
 
 	pi.registerCommand?.("ryno-bash", {
 		description: "ryno: how bash may change files — review | block | off (this session)",
 		handler: async (args: string, ctx: any) => {
 			const a = (args ?? "").trim() as BashMode;
-			if (BASH_MODES.includes(a)) bashMode = a;
-			else if (a) return ctx.ui.notify(`ryno: unknown mode "${a}" (review | block | off)`, "error");
+			if (rynoMode === "review") return ctx.ui.notify("ryno: review mode overrides bash policy; use /ryno-mode edit to return to editing", "warning");
+			if (a && !BASH_MODES.includes(a)) return ctx.ui.notify(`ryno: unknown mode "${a}" (review | block | off)`, "error");
+			if (a && (pending.size || (ctx.isIdle && !ctx.isIdle()))) {
+				return ctx.ui.notify("ryno: wait for the agent to finish or abort it before changing bash policy", "warning");
+			}
+			if (a) {
+				try { saveSessionSettings(rynoMode, a); }
+				catch (err: any) {
+					return ctx.ui.notify(`ryno: could not save session settings: ${err?.message ?? err}. Bash policy unchanged.`, "error");
+				}
+				bashMode = a;
+			}
 			updateStatus();
 			ctx.ui.notify(
 				`ryno bash mode: ${bashMode}` +
 					(bashMode === "block" ? (canSandbox() ? " (sandboxed: project files read-only)" : " (no sandbox here: changes are reverted after the command)") : "") +
-					`. Default comes from ${settingsPath()} or RYNO_BASH.`,
+					". Saved in this session; new-session defaults: ryno in Pi settings.json.",
 				"info",
 			);
 		},
@@ -694,6 +834,7 @@ export default function ryno(pi: ExtensionAPI) {
 	 * Answers that are not a user choice (editor gone, timeout) keep the changes.
 	 */
 	async function reviewChanges(changes: Change[], cwd: string, label: string, timeoutMs?: number) {
+		if (rynoMode === "review") return { kept: [], rolledBack: [], partial: [], unreviewed: [], needsAttention: false, text: REVIEW_BLOCK_REASON };
 		const kept: string[] = [], rolledBack: string[] = [], partial: string[] = [], unreviewed: string[] = [];
 		for (const c of changes) {
 			const strip = (t: string) => lf(t.replace(/^\ufeff/, ""));
@@ -739,12 +880,21 @@ export default function ryno(pi: ExtensionAPI) {
 		return { kept, rolledBack, partial, unreviewed, needsAttention, text };
 	}
 
-	(globalThis as any).__rynoApi = { hasEditors: () => clients.size > 0, reviewChanges, bashMode: () => bashMode };
+	(globalThis as any).__rynoApi = { hasEditors: () => clients.size > 0, reviewChanges, bashMode: () => bashMode, mode: () => rynoMode };
 
 	// ── the interception ──
 
 	pi.on("tool_call", async (event: any, ctx: any) => {
 		dbg("tool_call", event.toolName, "editors:", clients.size, "input:", event.input);
+		if (rynoMode === "review") {
+			if (REVIEW_READ_TOOLS.has(event.toolName)) return;
+			// Adapters whose hosts cannot rewrite commands must refuse shell execution entirely.
+			if (event.toolName === "bash" && event.readOnlyShell !== false && typeof event.input?.command === "string") {
+				const wrapped = reviewShellCommand(event.input.command);
+				if (wrapped) { event.input.command = wrapped; return; }
+			}
+			return { block: true, reason: REVIEW_BLOCK_REASON + " Use read/search/list tools; shell execution requires an enforceable read-only sandbox." };
+		}
 		if (event.toolName === "bash") {
 			const mode = bashMode;
 			if (mode === "off" || typeof event.input?.command !== "string") return;

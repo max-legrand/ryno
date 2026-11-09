@@ -8,6 +8,7 @@
  * Kept free of heavy imports: it runs on every tool call. The work happens in ryno-daemon.ts, one per
  * agent process, which this starts on demand and talks to over a unix socket.
  */
+import { loadRynoMode } from "../ryno.ts";
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -91,7 +92,8 @@ function config(agent: string) {
 	const matcher = agent === "codex" ? "apply_patch|Bash" : "Edit|MultiEdit|Write|Bash";
 	const hooks: Record<string, unknown> = {
 		SessionStart: [{ hooks: h(15) }],
-		PreToolUse: [{ matcher, hooks: h(T) }],
+		// Review-only mode must also gate delegation, notebooks, MCP tools and future tool names.
+		PreToolUse: [{ matcher: "*", hooks: h(T) }],
 		PostToolUse: [{ matcher, hooks: h(T) }],
 		...(agent === "claude" ? { PostToolUseFailure: [{ matcher, hooks: h(T) }] } : {}),
 		Stop: [{ hooks: h(T) }],
@@ -123,7 +125,7 @@ async function main() {
 	let input: any;
 	try { input = JSON.parse(await readStdin()); } catch { return; }
 	const ev = input?.hook_event_name;
-	if ((ev === "PreToolUse" || ev === "PostToolUse" || ev === "PostToolUseFailure") && !TOOLS.has(input.tool_name)) return;
+	if ((ev === "PostToolUse" || ev === "PostToolUseFailure") && !TOOLS.has(input.tool_name)) return;
 
 	const pid = agentPid();
 	const startsDaemon = ev === "SessionStart" || ev === "PreToolUse";
@@ -133,17 +135,21 @@ async function main() {
 	}
 	const res = await connect(ctlPath(pid), { input, projectDir: process.env.CLAUDE_PROJECT_DIR });
 	if (!res) return startsDaemon ? noDaemon(ev) : undefined;
-	if (res.error) process.stderr.write(`ryno: ${res.error}\n`);
+	if (res.error) {
+		process.stderr.write(`ryno: ${res.error}\n`);
+		return noDaemon(ev);
+	}
 	if (res.output) process.stdout.write(JSON.stringify(res.output) + "\n");
 }
 
-/** The daemon could not be reached: the call goes ahead unreviewed unless RYNO_NO_EDITOR=block. */
+/** Fail closed in review mode even when normal edit approvals are configured to fail open. */
 function noDaemon(ev: string) {
-	if (ev !== "PreToolUse" || process.env.RYNO_NO_EDITOR !== "block") return;
-	process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "ryno: the review daemon is not running (RYNO_NO_EDITOR=block)" } }) + "\n");
+	const review = loadRynoMode() === "review";
+	if (ev !== "PreToolUse" || (!review && process.env.RYNO_NO_EDITOR !== "block")) return;
+	process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `ryno: the review daemon is unavailable (${review ? "review-only mode" : "RYNO_NO_EDITOR=block"}); this call was NOT run` } }) + "\n");
 }
 
 main().then(
 	() => process.exit(0),
-	(err) => { process.stderr.write(`ryno hook: ${err?.message ?? err}\n`); process.exit(0); }, // never wedge the agent on our own bug
+	(err) => { process.stderr.write(`ryno hook: ${err?.message ?? err}\n`); noDaemon("PreToolUse"); process.exit(0); },
 );

@@ -10,7 +10,7 @@
  *
  * Exits when the agent process does.
  */
-import ryno, { BLOCK_PROMPT, encode, readDisk, runtimeDir, type BashMode } from "../ryno.ts";
+import ryno, { BLOCK_PROMPT, REVIEW_PROMPT, encode, readDisk, runtimeDir, type BashMode } from "../ryno.ts";
 import { applyClaudeEdit, applyClaudeEdits, patchChanges, shellPatch, type FileChange } from "./edits.ts";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -79,7 +79,7 @@ if (!alive(agentPid) || !takeLock()) process.exit(0);
 
 const handlers: Record<string, (e: any, c: any) => any> = {};
 ryno({ on: (name: string, h: any) => void (handlers[name] = h) } as any);
-const api = () => (globalThis as any).__rynoApi as { hasEditors(): boolean; bashMode(): BashMode };
+const api = () => (globalThis as any).__rynoApi as { hasEditors(): boolean; mode(): "edit" | "review"; bashMode(): BashMode };
 
 let session = { cwd: arg("cwd") ?? process.cwd(), id: "" };
 const ctx = (cwd: string, signal?: AbortSignal) => ({ cwd, signal, ui: {}, sessionManager: { getSessionId: () => session.id } });
@@ -164,6 +164,12 @@ async function preToolUse(inp: any, cwd: string, signal: AbortSignal): Promise<O
 	const id = String(inp.tool_use_id ?? randomUUID());
 	const tool = String(inp.tool_name ?? "");
 
+	if (api().mode() === "review") {
+		const readTools: Record<string, string> = { Read: "read", Grep: "grep", Glob: "find", LS: "ls" };
+		const result = await handlers.tool_call({ toolName: readTools[tool] ?? tool, toolCallId: id, input: ti, readOnlyShell: false }, ctx(cwd, signal));
+		return result?.block ? deny(result.reason) : undefined;
+	}
+
 	if (tool === "Bash" || tool === "shell" || tool === "exec_command" || tool === "local_shell") {
 		const cmd = typeof ti.command === "string" ? ti.command : Array.isArray(ti.command) ? ti.command.join(" ") : typeof ti.cmd === "string" ? ti.cmd : null;
 		if (cmd === null) return;
@@ -222,8 +228,10 @@ async function handle(req: any, signal: AbortSignal): Promise<Out> {
 	}
 	dbg("hook", inp.hook_event_name, inp.tool_name ?? "");
 	switch (inp.hook_event_name) {
-		case "SessionStart":
-			return api().bashMode() === "block" ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: BLOCK_PROMPT } } : undefined;
+		case "SessionStart": {
+			const prompt = api().mode() === "review" ? REVIEW_PROMPT : api().bashMode() === "block" ? BLOCK_PROMPT : null;
+			return prompt ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: prompt } } : undefined;
+		}
 		case "PreToolUse":
 			return preToolUse(inp, cwd, signal);
 		case "PostToolUse":

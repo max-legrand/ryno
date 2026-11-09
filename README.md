@@ -90,6 +90,61 @@ ln -s "$PWD/vis/ryno" ~/.config/vis/plugins/ryno
 require("plugins/ryno")   -- or require("plugins/ryno").setup{ auto_connect = false, keys = { accept = "<M-y>", reject = "<M-n>" } }
 ```
 
+## Research/review mode (you write the code)
+
+In pi, use `/ryno-mode review` before asking about a bug or feature. Ryno gives guidance in chat:
+where to look, why the change is needed, conceptual implementation steps, and tests/edge cases.
+It does not open an approval diff or produce a replacement implementation. Make the change yourself,
+save it, then run `/ryno-review [files or focus]`. The agent re-reads the saved files and reviews your
+work, explaining problems without fixing them. Repeat as needed. Unsaved buffers are not reviewed.
+You can also just ask for hints or say that your changes are ready for review.
+
+`/ryno-mode edit` restores the usual Neovim edit-approval workflow. `/ryno-mode` and `/ryno-bash`
+save their selections in the current Pi session, not in global settings. They survive reload and
+resume; forks inherit the settings at the fork point, and tree navigation restores the active
+branch's settings. Changes are only allowed while idle. A failed session save leaves the mode
+unchanged. `/ryno-mode` shows the current mode without writing anything. The footer shows `REVIEW ONLY`.
+
+Set new-session defaults in `~/.pi/agent/settings.json`:
+
+```json
+{ "ryno": { "mode": "edit", "bash": "block" } }
+```
+
+`edit` sends proposed edits to the connected editor for approval; `review` is research-only and
+keeps feedback in chat. Existing sessions keep their own settings when defaults change. On a new
+session, valid `RYNO_MODE` / `RYNO_BASH` values override Pi defaults, which override the legacy
+Ryno settings file. Session selections take precedence on reload/resume.
+The default remains `edit` until you save a selection. You can also set it manually:
+
+```json
+{ "mode": "review" }
+```
+
+in `~/.config/ryno/settings.json`, or launch with `RYNO_MODE=review` (a new-session default).
+In Pi, prefer the `ryno` section in Pi settings; commands only change the current session. Environment
+values do not replace a saved session selection on reload or resume.
+The legacy settings file also works for prime-agent, Claude Code and Codex. Those hosts use ordinary chat to request a
+review after saving; the slash commands are pi-only. **Hook users must regenerate/merge `--config`
+to install the wildcard `PreToolUse` matcher**, including if they already have ryno installed.
+
+This is enforced at the tool gate, not just a prompt: edits, writes, patches, Python execution,
+delegation, and unknown/custom tools are refused even without an editor connected or with auto-accept
+on. Read/search/list tools remain available. In pi on macOS, shell research runs under a stricter
+`sandbox-exec` policy denying **all filesystem writes and network access**, including ignored paths
+and files outside git. If that sandbox is unavailable (including `RYNO_SANDBOX=off`), shell calls are
+refused rather than run and rolled back. Prime-agent and hooks cannot safely rewrite shell commands,
+so shell calls there are always refused in this mode. Ask the user to run tests needing writable
+outputs/caches and share their results. On pi, enable the built-in `grep`, `find`, and `ls` tools if
+you need search/listing without shell support (e.g. `pi --tools read,grep,find,ls,bash`).
+
+Review mode overrides `RYNO_BASH` and `/ryno-bash`; bash `review` is a different policy that allows
+changes and asks whether to keep them. No snapshots or rollback are used for review-only commands,
+so your own saves are never reverted. Like all ryno gates, it covers agent tool calls, not manual
+user shell commands, already-running commands, other extensions, or agents outside this session.
+Use trusted local read/search/list tools; overriding them with mutating implementations defeats
+that assumption. This is a learning workflow, not an isolation boundary for hostile code.
+
 ## Using it (nvim)
 
 When the agent wants to edit a file, nvim opens a review buffer with the proposed version and removed lines shown above it (the winbar lists the keys):
@@ -121,7 +176,7 @@ links are forgotten when the session exits. The statusline shows `ryno⚭` while
 
 Commands: `:RynoLink [pid]` `:RynoUnlink` `:RynoConnect[!]` `:RynoDisconnect` `:RynoStatus` `:RynoAuto` (toggle auto-accept)
 `:RynoAccept` `:RynoReject` `:RynoAcceptAll` `:RynoRejectAll` `:RynoNext` `:RynoPrev` `:RynoSend`.
-Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes the bash policy for this pi session; it does not persist the setting. Your local install sets the review keys to `<leader>i…` because `<leader>a` is used by Harpoon.
+Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes and persists the bash policy for this Pi session only. Your local install sets the review keys to `<leader>i…` because `<leader>a` is used by Harpoon.
 
 `:RynoAuto` is **ryno's** auto-accept toggle: while on, nvim accepts every incoming file-change review without asking. It is independent of pi's “auto-confirm shell commands” setting. Auto-confirming bash/read/git commands does not turn on `:RynoAuto` or bypass ryno's `edit`/`write` reviews. In bash `block` mode, the shell write restrictions still apply. Leave `:RynoAuto` off if every file change must be reviewed.
 
@@ -192,9 +247,10 @@ plays another file, `RYNO_SOUND=off` turns it off. Outside macOS Ryno rings the 
   | `review` (built-in default when no setting overrides it) | Apply, then review detected changes marked **already applied**; *keep*, *roll back*, or keep some hunks. The command has already run (tests may have seen the new code). |
   | `off` | ryno ignores bash. |
 
-  `~/.config/ryno/settings.json` sets the default for new sessions, e.g. `{"bash":"block"}`. A valid
-  `RYNO_BASH=review|block|off` environment variable overrides it; pi's `/ryno-bash …` overrides
-  both for that session. The setting-file default is `review`; your local install has set it to
+  In Pi, `"ryno": {"bash":"block"}` in Pi settings sets the new-session default.
+  `~/.config/ryno/settings.json` (`{"bash":"block"}`) remains a fallback and the default for other hosts.
+  A valid `RYNO_BASH=review|block|off` overrides defaults for new sessions; Pi's `/ryno-bash …` saves
+  the policy in that session only. The setting-file default is `review`; your local install has set it to
   `block`. In `block` mode, edits made with structured `edit`/`write` tools are still reviewed before
   applying **when an editor is connected**. The agent is told to use those tools instead of shell writes. But **block mode is best-effort, not
   an OS-wide filesystem lock**: it only covers git repositories. Without a repository/snapshot, shell

@@ -8,7 +8,7 @@
  *
  * Runs on Node >= 23.6 (native TypeScript stripping) or bun.
  */
-import ryno, { BLOCK_PROMPT, MAX_REVIEW_FILES, blockNote, changesSince, encode, readDisk, revertChanges, takeSnapshot, type BashMode, type Snapshot } from "../ryno.ts";
+import ryno, { BLOCK_PROMPT, REVIEW_PROMPT, MAX_REVIEW_FILES, blockNote, changesSince, encode, readDisk, revertChanges, takeSnapshot, type BashMode, type Snapshot } from "../ryno.ts";
 import { extractEditCalls, simulate } from "./pyedits.ts";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -58,7 +58,7 @@ const remember = (tool: string, args: unknown, e: Inflight) => {
 // ── post-hoc review of what a command actually changed (python/bash write files in ways no gate can see)
 const api = () =>
 	(globalThis as any).__rynoApi as
-		| { hasEditors(): boolean; bashMode(): BashMode; reviewChanges(c: any, cwd: string, label: string): Promise<{ needsAttention: boolean; text: string }> }
+		| { hasEditors(): boolean; mode(): "edit" | "review"; bashMode(): BashMode; reviewChanges(c: any, cwd: string, label: string): Promise<{ needsAttention: boolean; text: string }> }
 		| undefined;
 const mode = (): BashMode => api()?.bashMode() ?? "review";
 let postWork: Promise<unknown> = Promise.resolve();
@@ -171,7 +171,7 @@ async function onMessage(msg: any) {
 				console.error(`ryno: initialize cwd=${cwd} pid=${process.pid}`);
 				reply(id, { protocolVersion: 3 });
 				await handlers.session_start?.({}, ctx());
-				hostRequest("prompt/setSuffix", { text: mode() === "block" ? BLOCK_PROMPT.replace("the edit tool (or write for new files)", "the edit() function") : null });
+				hostRequest("prompt/setSuffix", { text: api()?.mode() === "review" ? REVIEW_PROMPT : mode() === "block" ? BLOCK_PROMPT.replace("the edit tool (or write for new files)", "the edit() function") : null });
 				return;
 
 			case "tool/beforeCall": {
@@ -190,9 +190,10 @@ async function onMessage(msg: any) {
 				if (process.env.RYNO_DEBUG) console.error(`ryno: gate ${params?.toolName}`);
 				let result: any;
 				try {
-					result = await handlers.tool_call?.({ toolName: params?.toolName, toolCallId: toolId, input: args }, ctx());
+					result = await handlers.tool_call?.({ toolName: params?.toolName, toolCallId: toolId, input: args, readOnlyShell: false }, ctx());
 				} catch (err) {
-					console.error("ryno: gate failed, allowing:", err); // never wedge the agent on our own bug
+					if (api()?.mode() === "review") return reply(id, { block: true, reason: "ryno: review-only gate failed; this call was NOT run" });
+					console.error("ryno: gate failed, allowing:", err); // retain normal-mode behavior
 				}
 				if (result?.block) return reply(id, { block: true, reason: result.reason });
 				if (params?.toolName === "edit" && typeof args.path === "string") remember("edit", args, { files: [{ id: toolId, path: args.path }] });

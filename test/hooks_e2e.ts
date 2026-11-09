@@ -101,7 +101,7 @@ const ctx = String(o?.hookSpecificOutput?.additionalContext ?? "");
 ok(/ROLLED BACK[^]*e\.txt/.test(ctx) && o?.hookSpecificOutput?.hookEventName === "PostToolUse", "agent told: " + ctx.slice(0, 90));
 ok(r("e.txt") === A, "e.txt restored");
 
-console.log("non-file tools are ignored without contacting the daemon");
+console.log("non-file tools remain allowed in normal edit mode");
 o = await pre("Read", { file_path: path.join(work, "a.txt") }, "t8");
 ok(o === null, "no output");
 
@@ -130,7 +130,7 @@ ok(!descriptors().some((d) => d.agent === "codex") && !fs.readdirSync(rt).some((
 
 console.log("--config prints installable hooks");
 const cfg = JSON.parse(spawnSync("node", [hookJs, "--config", "codex"], { encoding: "utf8" }).stdout);
-ok(cfg.hooks.PreToolUse[0].matcher === "apply_patch|Bash" && cfg.hooks.PreToolUse[0].hooks[0].command.endsWith("ryno-hook.ts codex"), "codex config");
+ok(cfg.hooks.PreToolUse[0].matcher === "*" && cfg.hooks.PostToolUse[0].matcher === "apply_patch|Bash" && cfg.hooks.PreToolUse[0].hooks[0].command.endsWith("ryno-hook.ts codex"), "codex config gates all calls before execution, only mutations afterwards");
 
 nvim.kill();
 console.log(failed ? "\n" + failed + " FAILED" : "\nALL OK");
