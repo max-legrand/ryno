@@ -92,9 +92,53 @@ require("plugins/ryno")   -- or require("plugins/ryno").setup{ auto_connect = fa
 
 ## Research/review mode (you write the code)
 
-In pi, use `/ryno-mode review` before asking about a bug or feature. Ryno gives guidance in chat:
-where to look, why the change is needed, conceptual implementation steps, and tests/edge cases.
-It does not open an approval diff or produce a replacement implementation. Make the change yourself,
+In Pi, use `/ryno-mode review` before asking about a bug or feature. The agent uses `ryno_findings`
+to show file-anchored, read-only comment blocks in Neovim for file-specific guidance, including ordinary
+implementation questions and hints (no explicit "review" request needed): where to look, why the change is needed,
+conceptual implementation steps, and tests/edge cases. Chat gets a short summary. These are virtual
+lines, not file edits, replacement implementations, approval diffs, or Neovim diagnostics.
+Diagnostic navigation (`gn` / `gN`) ignores reviews; use `]r` / `[r` for review navigation.
+
+Review blocks use dedicated purple highlights, separate from diagnostic/info colors. In files with
+review comments, these buffer-local keys are available:
+
+| Key | Action | Command |
+| --- | --- | --- |
+| `]r` / `[r` | Next/previous comment, wrapping across files | `:RynoNextFinding` / `:RynoPrevFinding` |
+| `<leader>if` | List comments | `:RynoFindings` |
+| `<leader>ih` | Hide/show all comment blocks | `:RynoToggleFindings` |
+| `<leader>iH` | Hide all comment blocks | `:RynoHideFindings` |
+| (command only) | Show all, including dismissed comments | `:RynoShowFindings` |
+| `<leader>id` | Dismiss the comment anchored at the cursor | `:RynoDismissFinding` |
+| `<leader>iD` | Dismiss all comments | `:RynoClearFindings` |
+
+Hidden or dismissed comments show a purple `◆` in the sign-column gutter at their source line.
+The marker follows edits and disappears when the comment is shown again. Higher-priority diagnostic
+signs can take precedence; the sign column must be enabled (`:set signcolumn=auto` or `yes`).
+
+Hiding and dismissing retain comments and their list entries. `<leader>ih` restores dismissed
+comments (including dismiss-all); jumping to a dismissed or hidden comment also reveals it.
+A new published review replaces the previous batch. Navigation follows the anchors as
+you edit. Each published batch replaces that session's previous comments; an empty batch clears them.
+Comments are independent of auto-accept.
+
+Customize `findings_keys` in `require("ryno").setup` (set an individual key to `false` to disable it).
+Override `RynoFindingTitle`, `RynoFindingBody`, `RynoFindingBorder`, and `RynoFindingHidden` through `hl`; highlights are
+reapplied when the colorscheme changes. For example:
+
+```lua
+require("ryno").setup({
+  findings_keys = { next = "]r", prev = "[r", toggle = "<leader>ih" },
+  hl = {
+    RynoFindingBody = { fg = "#d8cfe8", bg = "#252132" },
+  },
+})
+```
+
+No editor connected means feedback falls back to chat. After upgrading, `/reload` Pi
+and restart Neovim to load the new socket handler. Old chat responses are not retroactively annotated.
+
+Ryno never produces a replacement implementation. Make the change yourself,
 save it, then run `/ryno-review [files or focus]`. The agent re-reads the saved files and reviews your
 work, explaining problems without fixing them. Repeat as needed. Unsaved buffers are not reviewed.
 You can also just ask for hints or say that your changes are ready for review.
@@ -112,7 +156,7 @@ Set new-session defaults in `~/.pi/agent/settings.json`:
 ```
 
 `edit` sends proposed edits to the connected editor for approval; `review` is research-only and
-keeps feedback in chat. Existing sessions keep their own settings when defaults change. On a new
+shows comments in Neovim without modifying code. Existing sessions keep their own settings when defaults change. On a new
 session, valid `RYNO_MODE` / `RYNO_BASH` values override Pi defaults, which override the legacy
 Ryno settings file. Session selections take precedence on reload/resume.
 The default remains `edit` until you save a selection. You can also set it manually:
@@ -130,7 +174,7 @@ to install the wildcard `PreToolUse` matcher**, including if they already have r
 
 This is enforced at the tool gate, not just a prompt: edits, writes, patches, Python execution,
 delegation, and unknown/custom tools are refused even without an editor connected or with auto-accept
-on. Read/search/list tools remain available. In pi on macOS, shell research runs under a stricter
+on. Read/search/list tools and Pi's read-only `ryno_findings` tool remain available. In pi on macOS, shell research runs under a stricter
 `sandbox-exec` policy denying **all filesystem writes and network access**, including ignored paths
 and files outside git. If that sandbox is unavailable (including `RYNO_SANDBOX=off`), shell calls are
 refused rather than run and rolled back. Prime-agent and hooks cannot safely rewrite shell commands,

@@ -39,7 +39,7 @@ process.env.RYNO_MODE = "review";
 process.env.RYNO_BASH = "off";
 process.env.RYNO_NO_EDITOR = "allow";
 
-const handlers: Record<string, Function> = {}, commands: Record<string, any> = {};
+const handlers: Record<string, Function> = {}, commands: Record<string, any> = {}, tools: Record<string, any> = {};
 const messages: string[] = [], notices: string[] = [];
 let idle = true, status = "", failSave = false;
 let entries: any[] = [];
@@ -52,6 +52,7 @@ const ctx = {
 ryno({
   on: (n: string, h: Function) => handlers[n] = h,
   registerCommand: (n: string, c: any) => commands[n] = c,
+  registerTool: (t: any) => tools[t.name] = t,
   sendUserMessage: (m: string) => messages.push(m),
   getSettings: () => ({ ryno: piDefaults }),
   appendEntry: (customType: string, data: any) => {
@@ -64,6 +65,8 @@ await Bun.sleep(50);
 const call = (toolName: string, input: any = {}, extra = {}) => handlers.tool_call({ toolName, toolCallId: "t", input, ...extra }, ctx);
 ok(status.includes("REVIEW ONLY"), "footer identifies review-only mode without an editor");
 ok((await handlers.before_agent_start({ systemPrompt: "BASE" })).systemPrompt === "BASE\n\n" + REVIEW_PROMPT, "review prompt replaces conflicting bash editing guidance");
+ok(REVIEW_PROMPT.includes("MUST call it before") && REVIEW_PROMPT.includes("how do I deep-copy this map?"), "annotation policy explicitly covers ordinary implementation questions before final answers");
+ok(tools.ryno_findings.promptGuidelines.some((g: string) => g.includes("Do not wait for the user")), "tool prompt reinforces automatic annotation delivery");
 for (const tool of ["edit", "write", "apply_patch", "ipython", "subagent", "codemode", "NotebookEdit", "unknown"]) {
   ok((await call(tool, { path: "missing", content: "new" }))?.block, `${tool} blocked before validation/no-editor fallback`);
 }
@@ -84,6 +87,18 @@ fs.writeFileSync(file, "before\n");
 ok((await call("write", { path: file, content: "agent proposal\n" }))?.block, "write also blocked with an editor connected");
 await Bun.sleep(30);
 ok(!wire.includes('"type":"review"') && fs.readFileSync(file, "utf8") === "before\n", "no approval diff and no agent write");
+ok(await call("ryno_findings") === undefined, "read-only findings tool is allowed in review mode");
+const findings = [{ path: "code.txt", line: 1, title: "Combine identical arrivals", body: "Count arrivals per node and energy level. Verify with a diamond graph." }];
+const published = await tools.ryno_findings.execute("f", { findings }, undefined, undefined, ctx);
+await Bun.sleep(30);
+ok(!published.isError && wire.includes('"type":"findings"') && wire.includes("Combine identical arrivals"), "review comments delivered to editor, not approval diffs");
+ok(fs.readFileSync(file, "utf8") === "before\n", "publishing findings never edits files");
+let badLine = false;
+try { await tools.ryno_findings.execute("f", { findings: [{ ...findings[0], line: 100 }] }, undefined, undefined, ctx); } catch { badLine = true; }
+ok(badLine, "invalid source lines rejected before publishing");
+await tools.ryno_findings.execute("f", { findings: [] }, undefined, undefined, ctx);
+await Bun.sleep(30);
+ok(wire.includes('"findings":[]'), "empty batch clears previous review comments");
 
 fs.writeFileSync(file, "user implementation\n");
 await handlers.tool_result({ toolName: "bash", toolCallId: "t", content: [] }, ctx);

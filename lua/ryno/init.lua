@@ -23,6 +23,16 @@ local defaults = {
   exclude_patterns = { "%.jjdescription$", "COMMIT_EDITMSG$", "MERGE_MSG$", "TAG_EDITMSG$", "git%-rebase%-todo$", "/pi%-editor%-", "rex%-scrollback%.txt$", "command%-line%.fish$" }, -- Lua patterns on the full path
   exclude = nil, -- optional function() -> boolean for custom rules (true = don't auto-connect)
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
+  -- Buffer-local while visiting files with review comments. Set a key to false to disable it.
+  findings_keys = {
+    next = "]r",
+    prev = "[r",
+    list = "<leader>if",
+    toggle = "<leader>ih",
+    hide = "<leader>iH",
+    dismiss = "<leader>id",
+    clear = "<leader>iD",
+  },
   keys = {
     accept = "<leader>ia",
     reject = "<leader>ir",
@@ -56,6 +66,9 @@ local function on_msg(c, msg)
   if msg.type == "hello" then
     c.desc = vim.tbl_extend("force", c.desc, msg)
     notify("connected to " .. label(c.desc))
+  elseif msg.type == "findings" then
+    local ok, err = pcall(require("ryno.findings").show, c.desc.pid, msg.findings or {}, M.config)
+    if not ok then notify("could not display review comments: " .. tostring(err), vim.log.levels.ERROR) end
   elseif msg.type == "review" then
     if M.config.auto_accept then
       c.send({ type = "decision", id = msg.id, action = "accept" })
@@ -115,6 +128,7 @@ function M.connect_to(desc)
     end
     conns[desc.pid] = nil
     review.drop_conn(c)
+    require("ryno.findings").clear(c.desc.pid)
     notify(("disconnected from %s%s"):format(label(c.desc), err and (": " .. tostring(err)) or ""), err and vim.log.levels.WARN or nil)
   end, function()
     if conns[desc.pid] == c then

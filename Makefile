@@ -5,8 +5,10 @@ unexport RYNO_BASH RYNO_MODE RYNO_AGENT_PID
 test:
 	nvim -l test/diff_test.lua
 	nvim -l test/json_test.lua
+	nvim -l test/findings_test.lua
 	bun test/core_test.ts
 	bun test/review_mode.ts
+	bun test/findings_e2e.ts
 	bun test/hooks_unit.ts
 	bun test/e2e.ts | grep -E "FAIL|ALL OK|FAILED"
 	bun test/prime_shim.ts 2>&1 | grep -E "FAIL|ALL OK|FAILED"

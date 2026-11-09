@@ -341,7 +341,17 @@ export const REVIEW_PROMPT =
 	"Compare with the intended behavior and previous guidance, report actionable findings with paths/lines, explain what is correct, " +
 	"and suggest the next step without fixing anything. Distinguish verified behavior from unrun tests. " +
 	"Only read/search/list tools and, where supported, a strictly read-only shell are available; " +
-	"ask the user to run tests that need writable caches or outputs. Guidance and findings belong in chat, not an edit approval buffer.";
+	"ask the user to run tests that need writable caches or outputs. " +
+	"Annotation delivery is required, not an optional extra: when ryno_findings is available, you MUST call it before your " +
+	"final chat answer whenever you give file-specific implementation guidance, explain a bug in the user's code, or review changes. " +
+	"This includes ordinary questions such as 'how do I deep-copy this map?' or requests for hints, even if the user never says " +
+	"'review' or 'annotate'. Do not wait for a separate request to add Ryno annotations. Read the relevant current source and anchor " +
+	"your guidance to its actual lines, so the user sees read-only comment blocks beside the code in Neovim. Include the reasoning, " +
+	"conceptual next steps, and verification in each block, not just a title. Publish one complete batch for the answer; it replaces " +
+	"previous findings. Then give only a short chat summary, rather than duplicating the full guidance in chat. " +
+	"Purely general questions with no relevant project source, clarification questions, and brief acknowledgements need no annotations. " +
+	"These are comments, never proposed edits or approval diffs. If the tool is unavailable, or it reports no connected editor, " +
+	"give feedback in chat instead. Do not assume the editor is disconnected without trying the available tool.";
 
 export const REVIEW_REQUEST =
 	"I have made and saved my changes. Stay in ryno review mode: re-read the relevant files from disk and review my implementation " +
@@ -757,8 +767,54 @@ export default function ryno(pi: ExtensionAPI) {
 			}
 			updateStatus();
 			ctx.ui.notify(`ryno mode: ${rynoMode}. ` + (rynoMode === "review"
-				? "You implement; the agent gives guidance and feedback in chat. Save your changes, then /ryno-review [scope]."
+				? "You implement; the agent posts review comments in Neovim and a summary in chat. Save your changes, then /ryno-review [scope]."
 				: "Normal edit approvals restored.") + " Settings belong to this session. New-session defaults: ryno in Pi settings.json.", "info");
+		},
+	});
+
+	pi.registerTool?.({
+		name: "ryno_findings",
+		label: "Review findings",
+		promptSnippet: "Publish file-specific guidance and reviews as read-only Neovim annotations",
+		promptGuidelines: ["In Ryno review mode, use ryno_findings before answering any file-specific implementation question, hint request, or code review. Do not wait for the user to explicitly request annotations."],
+		description: "Required in Ryno review mode for file-specific implementation guidance and hints, not just explicit code reviews. Show read-only, file-anchored review comment blocks in Neovim. Does not edit files or request edit approval. Replaces this session's previous findings; an empty array clears them. Publish the full review in one batch, then summarize in chat.",
+		parameters: {
+			type: "object",
+			properties: {
+				findings: {
+					type: "array", maxItems: 100,
+					items: {
+						type: "object",
+						properties: {
+							path: { type: "string", description: "File path relative to the project, or absolute" },
+							line: { type: "integer", minimum: 1, description: "1-based source line" },
+							title: { type: "string", minLength: 1, maxLength: 200 },
+							body: { type: "string", minLength: 1, maxLength: 12000, description: "Reasoning, hints, and how to verify. No replacement implementation." },
+						},
+						required: ["path", "line", "title", "body"], additionalProperties: false,
+					},
+				},
+			},
+			required: ["findings"], additionalProperties: false,
+		} as any,
+		async execute(_id: string, params: any, _signal: any, _update: any, ctx: any) {
+			if (!clients.size) return { content: [{ type: "text", text: "No editor connected. Give the review in chat or retry after connecting Neovim." }], details: {}, isError: true };
+			// Validate the entire batch before replacing any existing annotations.
+			const findings = params.findings.map((f: any) => {
+				const file = resolvePath(ctx.cwd, f.path);
+				const text = readRaw(file);
+				if (typeof text !== "string") throw new Error(`Cannot annotate unreadable/binary file: ${f.path}`);
+				const count = text.replace(/\n$/, "").split("\n").length;
+				if (f.line > count) throw new Error(`Line ${f.line} is beyond ${f.path} (${count} lines). Re-read the file.`);
+				return { path: file, line: f.line, title: f.title, body: f.body };
+			});
+			const batches = new Map([...clients].map((c) => [c, [] as any[]]));
+			for (const f of findings) for (const editor of pickEditors(f.path)) batches.get(editor)!.push(f);
+			for (const [editor, batch] of batches) send(editor, { type: "findings", findings: batch });
+			return {
+				content: [{ type: "text", text: `Sent ${findings.length} review comment(s) to the connected editor(s). No files changed. Summarize briefly in chat.` }],
+				details: { findings },
+			};
 		},
 	});
 
@@ -887,7 +943,7 @@ export default function ryno(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event: any, ctx: any) => {
 		dbg("tool_call", event.toolName, "editors:", clients.size, "input:", event.input);
 		if (rynoMode === "review") {
-			if (REVIEW_READ_TOOLS.has(event.toolName)) return;
+			if (REVIEW_READ_TOOLS.has(event.toolName) || (event.toolName === "ryno_findings" && pi.registerTool)) return;
 			// Adapters whose hosts cannot rewrite commands must refuse shell execution entirely.
 			if (event.toolName === "bash" && event.readOnlyShell !== false && typeof event.input?.command === "string") {
 				const wrapped = reviewShellCommand(event.input.command);

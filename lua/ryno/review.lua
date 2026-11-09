@@ -159,6 +159,9 @@ local function focus_rex_pane()
   end))
 end
 
+-- Research comments use the same pane-focus policy as approval diffs.
+M.focus_pane = focus_rex_pane
+
 --- Window to show the review in, per `config.open`:
 ---   "current" (default) reuse the current/matching window; "split" / "vsplit" / "tab" open a new one.
 --- New windows are closed again when the review ends. Returns win, opened(bool), origin_win.
