@@ -364,7 +364,8 @@ export const REVIEW_BLOCK_REASON =
 	"then wait for them to implement it. Do not retry via another tool or delegate edits.";
 
 // Deliberately closed: unknown/custom tools can write or delegate, even if their name sounds read-only.
-const REVIEW_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+// Include the read-only fast-file search tools explicitly, rather than matching names by prefix.
+const REVIEW_READ_TOOLS = new Set(["read", "grep", "find", "ls", "fffind", "ffgrep"]);
 
 export const BLOCK_PROMPT =
 	"File-change policy (enforced): do NOT create, modify or delete project files from bash or python " +

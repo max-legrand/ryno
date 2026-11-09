@@ -67,10 +67,10 @@ ok(status.includes("REVIEW ONLY"), "footer identifies review-only mode without a
 ok((await handlers.before_agent_start({ systemPrompt: "BASE" })).systemPrompt === "BASE\n\n" + REVIEW_PROMPT, "review prompt replaces conflicting bash editing guidance");
 ok(REVIEW_PROMPT.includes("MUST call it before") && REVIEW_PROMPT.includes("how do I deep-copy this map?"), "annotation policy explicitly covers ordinary implementation questions before final answers");
 ok(tools.ryno_findings.promptGuidelines.some((g: string) => g.includes("Do not wait for the user")), "tool prompt reinforces automatic annotation delivery");
-for (const tool of ["edit", "write", "apply_patch", "ipython", "subagent", "codemode", "NotebookEdit", "unknown"]) {
+for (const tool of ["edit", "write", "apply_patch", "ipython", "subagent", "codemode", "NotebookEdit", "unknown", "ffgrep_write", "fffind_exec"]) {
   ok((await call(tool, { path: "missing", content: "new" }))?.block, `${tool} blocked before validation/no-editor fallback`);
 }
-for (const tool of ["read", "grep", "find", "ls"]) ok(await call(tool) === undefined, `${tool} allowed`);
+for (const tool of ["read", "grep", "find", "ls", "fffind", "ffgrep"]) ok(await call(tool) === undefined, `${tool} allowed`);
 process.env.RYNO_SANDBOX = "off";
 ok((await call("bash", { command: "echo x > file" }))?.block, "shell fails closed without sandbox even with bash off");
 ok((await call("bash", { command: "ls" }, { readOnlyShell: false }))?.block, "hosts that cannot rewrite commands refuse shell calls");
