@@ -130,6 +130,10 @@ and when navigating with `]r` / `[r`. Source anchors show a purple `◆` marker 
 Use `j` / `k`, `Ctrl-D` / `Ctrl-U`, or `/` to navigate and search; `q` or Escape closes the popup
 and returns to the source. Review navigation and dismiss/hide keys also work inside the popup.
 With `focus = false`, use navigation or `<leader>io` to open feedback manually.
+Set `findings_popup_position = "above"` to anchor popups above their source line, like diagnostic
+floats. Their height shrinks to fit; when there is no room above, they open below instead.
+Tiny windows or off-screen anchors fall back to centering. The default position is `"center"`.
+This option also applies when opening an inline comment with `<leader>io`.
 
 Customize `findings_keys` in `require("ryno").setup` (set an individual key to `false` to disable it).
 Override `RynoFindingTitle`, `RynoFindingBody`, `RynoFindingBorder`, and `RynoFindingHidden` through `hl`; highlights are
@@ -138,6 +142,7 @@ reapplied when the colorscheme changes. For example:
 ```lua
 require("ryno").setup({
   findings_display = "popup", -- or "virtual_text" (default)
+  findings_popup_position = "above", -- or "center" (default)
   findings_keys = { next = "]r", prev = "[r", toggle = "<leader>ih" },
   hl = {
     RynoFindingBody = { fg = "#d8cfe8", bg = "#252132" },

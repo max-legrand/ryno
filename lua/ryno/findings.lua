@@ -134,16 +134,39 @@ open_popup = function(item)
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = "markdown"
-  local width = math.max(1, math.min(100, vim.o.columns - 4))
+  local anchored = config.findings_popup_position == "above"
+  local width = math.max(1, math.min(100, vim.o.columns - 4,
+    anchored and (api.nvim_win_get_width(source) - 2) or 100))
   local rows = 0
   for _, line in ipairs(lines) do rows = rows + math.max(1, math.ceil(vim.fn.strdisplaywidth(line) / width)) end
   local height = math.max(1, math.min(rows, math.floor((vim.o.lines - vim.o.cmdheight - 4) * 0.7)))
-  local win = api.nvim_open_win(buf, true, {
+  local opts = {
     relative = "editor", style = "minimal", border = "rounded",
     width = width, height = height,
     row = math.max(0, math.floor((vim.o.lines - height - 2) / 2)),
     col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
-  })
+  }
+  if anchored then
+    -- screenpos accounts for folds, wrapped lines, signs and virtual lines.
+    vim.cmd("redraw")
+    local pos = vim.fn.screenpos(source, item.row + 1, 1)
+    local origin = api.nvim_win_get_position(source)
+    local row = pos.row - origin[1] - 1
+    local above, below = row, api.nvim_win_get_height(source) - row - 1
+    if pos.row > 0 and row >= 0 and row < api.nvim_win_get_height(source) then
+      local use_above = above >= 3
+      local space = use_above and above or below
+      if space >= 3 then
+        opts.relative, opts.win = "win", source
+        opts.height = math.min(height, space - 2)
+        opts.row = use_above and (row - opts.height - 2) or (row + 1)
+        opts.col = math.max(0, math.min(pos.col - origin[2] - 1,
+          api.nvim_win_get_width(source) - width - 2))
+      end
+    end
+    -- Tiny windows or off-screen anchors retain the centered fallback.
+  end
+  local win = api.nvim_open_win(buf, true, opts)
   popup = { win = win, source = source, owner = item.state }
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true

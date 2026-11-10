@@ -25,6 +25,7 @@ local defaults = {
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
   -- Buffer-local while visiting files with review comments. Set a key to false to disable it.
   findings_display = "virtual_text", -- "virtual_text" inline blocks or a scrollable "popup"
+  findings_popup_position = "center", -- "center" or "above" the source anchor (falls back below)
   findings_keys = {
     open = "<leader>io",
     next = "]r",
