@@ -280,11 +280,27 @@ end
 function M.list()
   M.close()
   local entries = {}
-  for _, item in ipairs(items()) do
+  local listed = items()
+  for _, item in ipairs(listed) do
     entries[#entries + 1] = { bufnr = item.buf, lnum = item.row + 1, col = 1, text = item.message, type = "I" }
   end
   vim.fn.setloclist(0, {}, "r", { title = "Ryno review findings", items = entries })
+  local list_id = vim.fn.getloclist(0, { id = 0 }).id
   vim.cmd("lopen")
+  vim.keymap.set("n", "<CR>", function()
+    local selected_id = vim.fn.getloclist(0, { id = 0 }).id
+    -- Preserve Neovim's native location-list jump and its target window.
+    vim.cmd.normal({ args = { api.nvim_replace_termcodes("<CR>", true, false, true) }, bang = true })
+    if selected_id ~= list_id then return end
+    local target = listed[vim.fn.getloclist(0, { idx = 0 }).idx]
+    -- Refresh extmark positions and ignore entries replaced since the list opened.
+    for _, item in ipairs(items()) do
+      if item == target then
+        jump(item)
+        return
+      end
+    end
+  end, { buffer = api.nvim_get_current_buf(), desc = "Open Ryno finding" })
 end
 
 local function set_hidden(value)

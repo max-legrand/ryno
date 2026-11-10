@@ -159,6 +159,13 @@ assert(visible_blocks() == 0 and hidden_markers() == 2, "popup mode uses anchors
 vim.cmd("normal! G")
 assert(api.nvim_win_get_cursor(0)[1] == 101, "all feedback lines are reachable")
 assert(vim.fn.maparg("q", "n", false, true).buffer == 1)
+findings.list()
+api.nvim_win_set_cursor(0, { 2, 0 })
+vim.fn.maparg("<CR>", "n", false, true).callback()
+assert(api.nvim_win_get_config(0).relative == "editor"
+  and api.nvim_buf_get_lines(0, 0, 1, false)[1] == "Next popup",
+  "selecting a location-list entry opens its popup")
+findings.prev()
 findings.next()
 assert(api.nvim_get_current_buf() ~= buf and api.nvim_buf_get_lines(0, 0, 1, false)[1] == "Next popup", "navigation works inside popup")
 findings.dismiss()
@@ -186,6 +193,7 @@ assert(visible_blocks() == 1, "virtual text remains available")
 findings.open()
 assert(api.nvim_get_current_win() ~= source_win, "inline comments can also open in popup")
 findings.clear()
+vim.cmd("lclose")
 local anchor_file = vim.fn.tempname()
 local source_lines = {}
 for i = 1, 100 do source_lines[i] = "source line " .. i end
