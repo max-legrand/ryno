@@ -24,6 +24,7 @@ cmd("RynoUnlink", function() r().unlink() end, "Remove the manual link; auto-con
 cmd("RynoDisconnect", function() r().disconnect() end, "Disconnect from the agent")
 cmd("RynoStatus", function() r().info() end, "Show connection status")
 cmd("RynoFindings", function() require("ryno.findings").list() end, "List research/review comments")
+cmd("RynoOpenFinding", function() require("ryno.findings").open() end, "Open review comment in a scrollable popup")
 cmd("RynoClearFindings", function() require("ryno.findings").dismiss_all() end, "Dismiss all review comments (restorable with hide/show)")
 cmd("RynoNextFinding", function() require("ryno.findings").next() end, "Jump to next review comment")
 cmd("RynoPrevFinding", function() require("ryno.findings").prev() end, "Jump to previous review comment")

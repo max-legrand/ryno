@@ -95,8 +95,9 @@ require("plugins/ryno")   -- or require("plugins/ryno").setup{ auto_connect = fa
 In Pi, use `/ryno-mode review` before asking about a bug or feature. The agent uses `ryno_findings`
 to show file-anchored, read-only comment blocks in Neovim for file-specific guidance, including ordinary
 implementation questions and hints (no explicit "review" request needed): where to look, why the change is needed,
-conceptual implementation steps, and tests/edge cases. Chat gets a short summary. These are virtual
-lines, not file edits, replacement implementations, approval diffs, or Neovim diagnostics.
+conceptual implementation steps, and tests/edge cases. Chat gets a short summary. Comments use virtual
+lines by default, or configurable scrollable popups. They are not file edits, replacement implementations,
+approval diffs, or Neovim diagnostics.
 Diagnostic navigation (`gn` / `gN`) ignores reviews; use `]r` / `[r` for review navigation.
 
 Review blocks use dedicated purple highlights, separate from diagnostic/info colors. In files with
@@ -106,6 +107,7 @@ review comments, these buffer-local keys are available:
 | --- | --- | --- |
 | `]r` / `[r` | Next/previous comment, wrapping across files | `:RynoNextFinding` / `:RynoPrevFinding` |
 | `<leader>if` | List comments | `:RynoFindings` |
+| `<leader>io` | Open comment at cursor in a scrollable popup (either display mode) | `:RynoOpenFinding` |
 | `<leader>ih` | Hide/show all comment blocks | `:RynoToggleFindings` |
 | `<leader>iH` | Hide all comment blocks | `:RynoHideFindings` |
 | (command only) | Show all, including dismissed comments | `:RynoShowFindings` |
@@ -122,12 +124,20 @@ A new published review replaces the previous batch. Navigation follows the ancho
 you edit. Each published batch replaces that session's previous comments; an empty batch clears them.
 Comments are independent of auto-accept.
 
+Set `findings_display = "popup"` to show feedback in a focused, read-only floating window instead of
+inline blocks. The default is `"virtual_text"`. Popups open when feedback arrives (with `focus = true`)
+and when navigating with `]r` / `[r`. Source anchors show a purple `◆` marker in popup mode.
+Use `j` / `k`, `Ctrl-D` / `Ctrl-U`, or `/` to navigate and search; `q` or Escape closes the popup
+and returns to the source. Review navigation and dismiss/hide keys also work inside the popup.
+With `focus = false`, use navigation or `<leader>io` to open feedback manually.
+
 Customize `findings_keys` in `require("ryno").setup` (set an individual key to `false` to disable it).
 Override `RynoFindingTitle`, `RynoFindingBody`, `RynoFindingBorder`, and `RynoFindingHidden` through `hl`; highlights are
 reapplied when the colorscheme changes. For example:
 
 ```lua
 require("ryno").setup({
+  findings_display = "popup", -- or "virtual_text" (default)
   findings_keys = { next = "]r", prev = "[r", toggle = "<leader>ih" },
   hl = {
     RynoFindingBody = { fg = "#d8cfe8", bg = "#252132" },

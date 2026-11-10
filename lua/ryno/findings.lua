@@ -1,9 +1,21 @@
--- Research-mode comments. Extmarks only, separate from diagnostics and edit approvals.
+-- Research-mode comments. Read-only extmarks/popups, separate from diagnostics and edit approvals.
 local api = vim.api
 local M = {}
 local owners = {}
 local hidden = false
 local config = {}
+local popup
+local open_popup
+
+function M.close()
+  local current = popup
+  popup = nil
+  if current and api.nvim_win_is_valid(current.win) then
+    local focused = api.nvim_get_current_win() == current.win
+    api.nvim_win_close(current.win, true)
+    if focused and api.nvim_win_is_valid(current.source) then api.nvim_set_current_win(current.source) end
+  end
+end
 
 local function highlights()
   local normal = api.nvim_get_hl(0, { name = "Normal", link = false })
@@ -48,7 +60,7 @@ local function items()
 end
 
 local function render(item)
-  local concealed = hidden or item.dismissed
+  local concealed = hidden or item.dismissed or config.findings_display == "popup"
   item.id = api.nvim_buf_set_extmark(item.buf, item.state.ns, item.row, 0, {
     id = item.id, virt_lines = concealed and {} or item.block, virt_lines_above = true,
     sign_text = concealed and "◆" or "", sign_hl_group = "RynoFindingHidden",
@@ -58,20 +70,25 @@ end
 
 local function jump(item)
   if hidden or item.dismissed then M.toggle() end
+  M.close()
   api.nvim_set_current_buf(item.buf)
   api.nvim_win_set_cursor(0, { item.row + 1, 0 })
-  vim.fn.winrestview({ topline = item.row + 1, topfill = #item.block })
+  if config.findings_display == "popup" then
+    open_popup(item)
+  else
+    vim.fn.winrestview({ topline = item.row + 1, topfill = #item.block })
+  end
 end
 
 local function mappings(buf)
   local keys = vim.tbl_extend("force", {
     next = "]r", prev = "[r", list = "<leader>if", toggle = "<leader>ih",
-    dismiss = "<leader>id", clear = "<leader>iD", hide = "<leader>iH",
+    dismiss = "<leader>id", clear = "<leader>iD", hide = "<leader>iH", open = "<leader>io",
   }, config.findings_keys or {})
   local actions = {
     next = function() M.next() end, prev = function() M.prev() end,
     list = function() M.list() end, toggle = function() M.toggle() end,
-    hide = function() M.hide() end,
+    hide = function() M.hide() end, open = function() M.open() end,
     dismiss = function() M.dismiss() end, clear = function() M.dismiss_all() end,
   }
   for name, fn in pairs(actions) do
@@ -108,7 +125,50 @@ local function wrap(text, width)
   return lines
 end
 
+open_popup = function(item)
+  M.close()
+  local source = api.nvim_get_current_win()
+  local buf = api.nvim_create_buf(false, true)
+  local lines = vim.split(item.message, "\n", { plain = true })
+  api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "markdown"
+  local width = math.max(1, math.min(100, vim.o.columns - 4))
+  local rows = 0
+  for _, line in ipairs(lines) do rows = rows + math.max(1, math.ceil(vim.fn.strdisplaywidth(line) / width)) end
+  local height = math.max(1, math.min(rows, math.floor((vim.o.lines - vim.o.cmdheight - 4) * 0.7)))
+  local win = api.nvim_open_win(buf, true, {
+    relative = "editor", style = "minimal", border = "rounded",
+    width = width, height = height,
+    row = math.max(0, math.floor((vim.o.lines - height - 2) / 2)),
+    col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+  })
+  popup = { win = win, source = source, owner = item.state }
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+  vim.wo[win].scrolloff = 0
+  vim.wo[win].winhighlight = "Normal:RynoFindingBody,FloatBorder:RynoFindingBorder"
+  mappings(buf)
+  for _, key in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", key, M.close, { buffer = buf, desc = "Close Ryno feedback" })
+  end
+end
+
+function M.open()
+  M.close()
+  local buf, row = api.nvim_get_current_buf(), api.nvim_win_get_cursor(0)[1] - 1
+  for _, item in ipairs(items()) do
+    if item.buf == buf and item.row == row then
+      open_popup(item)
+      return
+    end
+  end
+  vim.notify("ryno: jump to a review comment to open it")
+end
+
 function M.clear(owner)
+  if popup and (owner == nil or popup.owner == owners[owner]) then M.close() end
   for key, state in pairs(owners) do
     if owner == nil or key == owner then
       for buf in pairs(state.buffers) do
@@ -155,8 +215,9 @@ function M.show(owner, findings, opts)
   end
   -- Do not interrupt an edit-approval diff. Comments still appear in the source buffers.
   if first and config.focus and not hidden and not require("ryno.review").active then
+    M.close()
     local wins = vim.fn.win_findbuf(first.buf)
-    local win = wins[1]
+    local win = api.nvim_get_current_buf() == first.buf and api.nvim_get_current_win() or wins[1]
     if not win then
       local commands = { split = "split", vsplit = "vsplit", tab = "tabnew" }
       if commands[config.open] then vim.cmd(commands[config.open]) end
@@ -166,8 +227,11 @@ function M.show(owner, findings, opts)
     api.nvim_set_current_win(win)
     api.nvim_win_set_cursor(win, { first.row + 1, 0 })
     api.nvim_win_call(win, function()
-      vim.fn.winrestview({ topline = first.row + 1, topfill = first.height })
+      if config.findings_display ~= "popup" then
+        vim.fn.winrestview({ topline = first.row + 1, topfill = first.height })
+      end
     end)
+    if config.findings_display == "popup" then open_popup(state.items[1]) end
     require("ryno.review").focus_pane()
   end
   vim.notify(("ryno: %d review comment(s)%s, :RynoFindings to list, :RynoToggleFindings to hide/show"):format(#findings, hidden and " (hidden)" or ""))
@@ -189,6 +253,7 @@ function M.get(buf)
 end
 
 function M.list()
+  M.close()
   local entries = {}
   for _, item in ipairs(items()) do
     entries[#entries + 1] = { bufnr = item.buf, lnum = item.row + 1, col = 1, text = item.message, type = "I" }
@@ -198,6 +263,7 @@ function M.list()
 end
 
 local function set_hidden(value)
+  M.close()
   hidden = value
   for _, item in ipairs(items()) do
     if not hidden then item.dismissed = false end
@@ -225,6 +291,7 @@ function M.toggle()
 end
 
 local function navigate(direction)
+  M.close()
   local entries = items()
   if #entries == 0 then return vim.notify("ryno: no review comments") end
   local buf, row = api.nvim_get_current_buf(), api.nvim_win_get_cursor(0)[1] - 1
@@ -246,6 +313,7 @@ function M.next() navigate(1) end
 function M.prev() navigate(-1) end
 
 function M.dismiss()
+  M.close()
   local buf, row = api.nvim_get_current_buf(), api.nvim_win_get_cursor(0)[1] - 1
   for _, item in ipairs(items()) do
     if item.buf == buf and item.row == row then
@@ -259,6 +327,7 @@ function M.dismiss()
 end
 
 function M.dismiss_all()
+  M.close()
   for _, item in ipairs(items()) do
     item.dismissed = true
     render(item)

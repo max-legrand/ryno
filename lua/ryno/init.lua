@@ -24,7 +24,9 @@ local defaults = {
   exclude = nil, -- optional function() -> boolean for custom rules (true = don't auto-connect)
   hl = {}, -- override highlight groups, e.g. { RynoAdd = { bg = "#223322" }, RynoAddText = { bg = "#335533" } }
   -- Buffer-local while visiting files with review comments. Set a key to false to disable it.
+  findings_display = "virtual_text", -- "virtual_text" inline blocks or a scrollable "popup"
   findings_keys = {
+    open = "<leader>io",
     next = "]r",
     prev = "[r",
     list = "<leader>if",
