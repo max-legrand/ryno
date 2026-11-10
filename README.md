@@ -131,7 +131,8 @@ Use `j` / `k`, `Ctrl-D` / `Ctrl-U`, or `/` to navigate and search; `q` or Escape
 and returns to the source. Review navigation and dismiss/hide keys also work inside the popup.
 With `focus = false`, use navigation or `<leader>io` to open feedback manually.
 Set `findings_popup_position = "above"` to anchor popups above their source line, like diagnostic
-floats. Their height shrinks to fit; when there is no room above, they open below instead.
+floats. They prefer above when the desired height fits; otherwise they use whichever side has more
+room, shrinking only when neither side fits the desired height.
 Tiny windows or off-screen anchors fall back to centering. The default position is `"center"`.
 This option also applies when opening an inline comment with `<leader>io`.
 

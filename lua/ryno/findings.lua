@@ -154,7 +154,9 @@ open_popup = function(item)
     local row = pos.row - origin[1] - 1
     local above, below = row, api.nvim_win_get_height(source) - row - 1
     if pos.row > 0 and row >= 0 and row < api.nvim_win_get_height(source) then
-      local use_above = above >= 3
+      -- Prefer above when it fits; otherwise choose the roomier side instead
+      -- of squeezing long feedback into just one or two content rows.
+      local use_above = above >= height + 2 or above >= below
       local space = use_above and above or below
       if space >= 3 then
         opts.relative, opts.win = "win", source
