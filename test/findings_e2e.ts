@@ -11,11 +11,13 @@ fs.writeFileSync(file, "one\ntwo\nthree\n");
 process.env.RYNO_DIR = path.join(tmp, "rt");
 process.env.RYNO_SETTINGS = "/nonexistent/ryno-settings.json";
 process.env.RYNO_MODE = "review";
-const handlers: Record<string, Function> = {}, tools: Record<string, any> = {};
-const ctx = { cwd: tmp, ui: { setStatus() {} }, sessionManager: { getSessionId: () => "findings" } };
+const handlers: Record<string, Function> = {}, tools: Record<string, any> = {}, commands: Record<string, any> = {};
+let branch: any[] = [];
+const ctx = { cwd: tmp, ui: { setStatus() {}, notify() {} }, sessionManager: { getSessionId: () => "findings", getBranch: () => branch } };
 ryno({
   on: (name: string, fn: Function) => handlers[name] = fn,
   registerTool: (tool: any) => tools[tool.name] = tool,
+  registerCommand: (name: string, command: any) => commands[name] = command,
 } as any);
 await handlers.session_start({}, ctx);
 const editor = spawn("nvim", ["--headless", "--listen", socket, "-u", "NONE", "-i", "NONE",
@@ -46,6 +48,20 @@ try {
   assert((await handlers.tool_call({ toolName: "write", input: {} }, ctx))?.block, "file writes remain blocked");
   await tools.ryno_findings.execute("f", { findings: [] }, undefined, undefined, ctx);
   await wait(() => expr("#require('ryno.findings').get(0)") === "0");
+  await tools.ryno_findings.execute("f", input, undefined, undefined, ctx);
+  await wait(() => expr("#require('ryno.findings').get(0)") === "1");
+  await commands["ryno-mode"].handler("edit", ctx);
+  await wait(() => expr("#require('ryno.findings').get(0)") === "0");
+  const blocked = await tools.ryno_findings.execute("f", input, undefined, undefined, ctx);
+  assert(blocked.isError, "findings tool cannot publish in edit mode");
+  assert(expr("#require('ryno.findings').get(0)") === "0", "switching to edit mode clears review annotations");
+  await commands["ryno-mode"].handler("review", ctx);
+  await tools.ryno_findings.execute("f", input, undefined, undefined, ctx);
+  await wait(() => expr("#require('ryno.findings').get(0)") === "1");
+  branch = [{ type: "custom", customType: "ryno-settings", data: { mode: "edit", bash: "review" } }];
+  await handlers.session_tree({}, ctx);
+  await wait(() => expr("#require('ryno.findings').get(0)") === "0");
+  assert((await tools.ryno_findings.execute("f", input, undefined, undefined, ctx)).isError, "restoring edit mode disables annotations too");
   console.log("ALL OK: review-only findings delivered to Neovim");
 } finally {
   editor.kill();

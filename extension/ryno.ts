@@ -726,6 +726,7 @@ export default function ryno(pi: ExtensionAPI) {
 		}
 		// Capture defaults once so changing them doesn't change an existing session on resume.
 		if (!restored) saveSessionSettings();
+		if (rynoMode === "edit") broadcast({ type: "findings", findings: [] });
 	}
 
 	pi.on("session_tree", async (_e: any, ctx: any) => {
@@ -765,6 +766,7 @@ export default function ryno(pi: ExtensionAPI) {
 					return ctx.ui.notify(`ryno: could not save session settings: ${err?.message ?? err}. Mode unchanged.`, "error");
 				}
 				rynoMode = a;
+				if (rynoMode === "edit") broadcast({ type: "findings", findings: [] });
 			}
 			updateStatus();
 			ctx.ui.notify(`ryno mode: ${rynoMode}. ` + (rynoMode === "review"
@@ -799,6 +801,7 @@ export default function ryno(pi: ExtensionAPI) {
 			required: ["findings"], additionalProperties: false,
 		} as any,
 		async execute(_id: string, params: any, _signal: any, _update: any, ctx: any) {
+			if (rynoMode !== "review") return { content: [{ type: "text", text: "Review annotations are disabled in edit mode. Respond in chat instead." }], details: {}, isError: true };
 			if (!clients.size) return { content: [{ type: "text", text: "No editor connected. Give the review in chat or retry after connecting Neovim." }], details: {}, isError: true };
 			// Validate the entire batch before replacing any existing annotations.
 			const findings = params.findings.map((f: any) => {
