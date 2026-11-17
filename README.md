@@ -220,6 +220,13 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 | `<leader>is` | send the decision once every hunk is decided (only needed with `confirm_send=true`) |
 | `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
 
+**Diff layout.** Hunks separated only by a few unchanged lines (at most `merge_gap`, and at most half
+the size of each neighbouring hunk) are merged, so a rewritten block reads as the whole old block
+followed by the whole new block, instead of fragments interleaved with generic lines that happened to
+match (`return foo(`, `),`). Set `merge_gap=0` to keep every hunk separate. Word-level emphasis ignores
+indentation, so a re-indented block (e.g. code wrapped in a new `with`/`if`) is not a wall of highlighted
+whitespace.
+
 Line comments appear as a tinted `»` band below the line(s) they refer to. A hunk with line comments
 can't be accepted: reject it (`<leader>ir`) to send them to the agent, with the line numbers, the code
 they point at, and whether it is an original or a proposed line. Accept all rejects commented hunks instead
@@ -253,7 +260,7 @@ beside it), but only when nvim's pane is in its session's active tab; it never s
 were typing elsewhere then go to nvim, so set `focus_pane=false` if that gets in the way.
 
 Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true, focus_pane=true,
-open="current", ask_reason=false, confirm_send=false, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
+open="current", ask_reason=false, confirm_send=false, merge_gap=3, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
 reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic", comment_hunk="<leader>iC", send="<leader>is"}`.
 
 **Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not

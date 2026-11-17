@@ -49,7 +49,28 @@ eq(inl("local total = a + b", "local total = a * b"), { { "+" }, { "*" } }, "inl
 eq(inl('compute(total, "hello world")', 'compute(total, "goodbye world", 3)'), { { "hello" }, { "goodbye", ", 3" } }, "inline: separate words stay separate")
 eq(inl("foo bar baz qux", "foo BAR BAZ qux"), { { "bar baz" }, { "BAR BAZ" } }, "inline: runs joined across whitespace")
 eq(inl("x = 1", "x = 1 -- note"), { {}, { " -- note" } }, "inline: pure addition")
-eq(inl("\tif a then", "    if a then"), { { "\t" }, { "    " } }, "inline: indentation change")
+eq({ d.inline("\tif a then", "    if a then") }, {}, "inline: indentation-only change -> nil")
+eq(inl("  x = foo(1)", "      x = foo(2)"), { { "1" }, { "2" } }, "inline: re-indent not emphasised, word change still is")
+local ro, rn = d.inline_hunk({ "try:", "  a()" }, { "    try:", "      a()" })
+eq({ ro[1], ro[2], rn[1], rn[2] }, { {}, {}, {}, {} }, "inline_hunk: re-indented lines paired without emphasis")
+
+-- hunk merging: a rewritten block separated by a couple of generic matching lines becomes one hunk
+local OLD = "head\no1\no2\no3\no4\nreturn x(\nok=False,\no5\no6\no7\no8\ntail\n"
+local NEW = "head\nn1\nn2\nn3\nn4\nn5\nreturn x(\nok=False,\nn6\nn7\nn8\nn9\ntail\n"
+local o, n = d.split(OLD), d.split(NEW)
+eq(#d.hunks(o, n, { merge_gap = 0 }), 2, "merge_gap=0: fragments kept")
+local merged = d.hunks(o, n)
+eq(#merged, 1, "merge: one hunk")
+eq({ merged[1].a_start, merged[1].a_count, merged[1].b_start, merged[1].b_count }, { 2, 10, 2, 11 }, "merge: ranges")
+eq((run(OLD, NEW, {})), NEW, "merge: accept")
+eq((run(OLD, NEW, { "rejected" })), OLD, "merge: reject")
+-- small independent edits stay separate even when close together
+eq(#d.hunks((d.split("a\nb\nc\nd\n")), (d.split("A\nb\nC\nd\n"))), 2, "merge: one-line edits one line apart stay separate")
+-- merge with a pure insertion / pure deletion neighbour
+local o2, n2 = (d.split("k\nx1\nx2\nx3\nmid\nz\n")), (d.split("k\nmid\ny1\ny2\ny3\nz\n"))
+local m2 = d.hunks(o2, n2)
+eq(#m2, 1, "merge: deletion + insertion around one line")
+eq((run("k\nx1\nx2\nx3\nmid\nz\n", "k\nmid\ny1\ny2\ny3\nz\n", {})), "k\nmid\ny1\ny2\ny3\nz\n", "merge: deletion + insertion accept")
 eq(inl("caf\195\169 x", "caf\195\169 y"), { { "x" }, { "y" } }, "inline: UTF-8 words intact")
 eq({ d.inline("completely different", "nothing alike here at all") }, {}, "inline: unrelated lines -> nil")
 eq({ d.inline("same", "same") }, {}, "inline: identical -> nil")

@@ -41,14 +41,55 @@ end
 ---@field new string[]
 ---@field state "pending"|"accepted"|"rejected"
 
+--- First line a hunk side occupies, and the line it ends on (for an empty side: the line before it).
+local function side_range(start, count)
+  if count > 0 then return start, start + count - 1 end
+  return start + 1, start
+end
+
+--- Merge hunks separated only by a few unchanged lines when both are much larger than the gap.
+--- A rewritten block otherwise shows up as fragments interleaved with whatever generic lines happen
+--- to match (`return foo(`, `)`, blank lines), which is hard to read. Like diff-match-patch's semantic
+--- cleanup: the gap must be at most `max_gap` lines and at most half the size of each neighbour.
+local function coalesce(idx, max_gap)
+  if not max_gap or max_gap <= 0 then return idx end
+  local out = {}
+  for _, h in ipairs(idx) do
+    local prev = out[#out]
+    if prev then
+      local _, prev_end = side_range(prev[1], prev[2])
+      local first = side_range(h[1], h[2])
+      local gap = first - prev_end - 1
+      local size_prev, size_h = math.max(prev[2], prev[4]), math.max(h[2], h[4])
+      if gap >= 1 and gap <= max_gap and 2 * gap <= math.min(size_prev, size_h) then
+        local a1 = side_range(prev[1], prev[2])
+        local _, a2 = side_range(h[1], h[2])
+        local b1 = side_range(prev[3], prev[4])
+        local _, b2 = side_range(h[3], h[4])
+        out[#out] = { a1, a2 - a1 + 1, b1, b2 - b1 + 1 }
+        goto continue
+      end
+    end
+    out[#out + 1] = { h[1], h[2], h[3], h[4] }
+    ::continue::
+  end
+  return out
+end
+
+--- `opts.merge_gap`: merge hunks separated by at most this many unchanged lines when both are at least
+--- twice as large as the gap (default 3; 0 keeps every hunk separate).
 ---@return RynoHunk[]
-function M.hunks(old, new)
+function M.hunks(old, new, opts)
   local idx = vim.diff(as_text(old), as_text(new), {
     result_type = "indices",
     algorithm = "histogram",
+    indent_heuristic = true,
     ctxlen = 0,
     interhunkctxlen = 0,
   })
+  local merge_gap = 3
+  if opts and opts.merge_gap ~= nil then merge_gap = opts.merge_gap end
+  idx = coalesce(idx, merge_gap)
   local hunks = {}
   for i, h in ipairs(idx) do
     local sa, ca, sb, cb = h[1], h[2], h[3], h[4]
@@ -144,9 +185,20 @@ end
 --- Which parts of a changed line pair differ, at word granularity.
 --- Returns byte ranges `{ {start, end}, ... }` (0-based, end exclusive) for `a` and for `b`, or nil when
 --- the lines are identical or share too little for the emphasis to help (the whole line is the change).
+---
+--- Leading indentation is never emphasised: a re-indented block (e.g. code wrapped in a new `with`/`if`)
+--- would otherwise be a wall of highlighted whitespace. Lines that differ only in indentation return nil.
 ---@return integer[][]|nil, integer[][]|nil
 function M.inline(a, b)
   if a == b then return nil end
+  local ia, ib = #a:match("^%s*"), #b:match("^%s*")
+  if ia > 0 or ib > 0 then
+    local ra, rb = M.inline(a:sub(ia + 1), b:sub(ib + 1))
+    if not ra then return nil end
+    for _, r in ipairs(ra) do r[1], r[2] = r[1] + ia, r[2] + ia end
+    for _, r in ipairs(rb) do r[1], r[2] = r[1] + ib, r[2] + ib end
+    return ra, rb
+  end
   local ta, sa = tokenize(a)
   local tb, sb = tokenize(b)
   if #ta == 0 or #tb == 0 then return nil end
@@ -182,7 +234,13 @@ function M.inline_hunk(old, new)
   for i = 1, #old do
     -- Look a few lines ahead so a line inserted in the middle doesn't shift every pairing after it.
     for j = from, math.min(#new, from + 8) do
-      local ra, rb = M.inline(old[i], new[j])
+      local ra, rb
+      if (old[i]:gsub("^%s+", "")) == (new[j]:gsub("^%s+", "")) then
+        -- unchanged or only re-indented (e.g. inside a merged hunk): paired, nothing to emphasise
+        ra, rb = {}, {}
+      else
+        ra, rb = M.inline(old[i], new[j])
+      end
       if ra then
         old_spans[i], new_spans[j], from = ra, rb, j + 1
         break

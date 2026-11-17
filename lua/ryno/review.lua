@@ -220,6 +220,12 @@ local function make_scratch(r, lines, suffix)
   api.nvim_buf_set_lines(b, 0, -1, false, lines)
   if ft then
     vim.bo[b].filetype = ft
+    -- Removed lines take their colours from the old-text buffer, which is never displayed. FileType hooks
+    -- that call vim.treesitter.start() without a buffer start it on the *current* buffer instead, so
+    -- start it here explicitly (no-op when a hook already did, or when there is no parser).
+    if not vim.treesitter.highlighter.active[b] then
+      pcall(vim.treesitter.start, b, vim.treesitter.language.get_lang(ft) or ft)
+    end
   end
   vim.bo[b].modified = false
   vim.bo[b].modifiable = false
@@ -1170,7 +1176,7 @@ local function begin(r)
   hl()
   r.old, r.old_nl = diff.split(r.msg.original or "")
   r.new, r.new_nl = diff.split(r.msg.proposed)
-  r.hunks = diff.hunks(r.old, r.new)
+  r.hunks = diff.hunks(r.old, r.new, { merge_gap = M.config.merge_gap })
   r.syntax_buf = make_scratch(r, r.old, "old")
 
   if #r.hunks == 0 then -- only the trailing newline differs: nothing to review line-wise
