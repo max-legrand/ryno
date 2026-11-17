@@ -451,8 +451,11 @@ type Decision = {
 	reason?: string;
 	accepted?: number;
 	total?: number;
-	rejected?: Array<{ line: number; old: string; new: string; comment?: string }>;
+	rejected?: Array<{ line: number; old: string; new: string; comment?: string; notes?: LineNote[] }>;
 };
+
+/** A user comment on specific lines of a rejected hunk: `side` "old" = original file lines, "new" = proposed lines. */
+type LineNote = { side: "old" | "new"; line: number; endLine?: number; code?: string; comment: string };
 
 type SystemReject = { action: "reject"; reason: string; system: true }; // timeout, abort, disconnect — not a user choice
 
@@ -1085,8 +1088,15 @@ export default function ryno(pi: ExtensionAPI) {
 function describeRejected(r: Decision["rejected"]): string {
 	if (!Array.isArray(r) || r.length === 0) return "";
 	const clip = (s: string) => (s.length > 300 ? s.slice(0, 300) + "…" : s);
+	const note = (n: LineNote) => {
+		const where = n.endLine && n.endLine !== n.line ? `lines ${n.line}-${n.endLine}` : `line ${n.line}`;
+		const side = n.side === "old" ? `original ${where}` : `your proposed ${where}`;
+		return `\n      · on ${side}${n.code != null ? ` (${JSON.stringify(clip(n.code))})` : ""}: ${n.comment}`;
+	};
 	const items = r.slice(0, 10).map(
-		(h) => `  - near line ${h.line}: wanted to replace ${JSON.stringify(clip(h.old))} with ${JSON.stringify(clip(h.new))}${h.comment ? ` — User comment: ${h.comment}` : ""}`,
+		(h) =>
+			`  - near line ${h.line}: wanted to replace ${JSON.stringify(clip(h.old))} with ${JSON.stringify(clip(h.new))}${h.comment ? ` — User comment: ${h.comment}` : ""}` +
+			(Array.isArray(h.notes) && h.notes.length ? `\n    User comments on specific lines:${h.notes.map(note).join("")}` : ""),
 	);
 	return `Rejected hunks:\n${items.join("\n")}\n` + (r.length > 10 ? `  (+${r.length - 10} more)\n` : "");
 }

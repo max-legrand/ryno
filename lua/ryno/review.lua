@@ -69,6 +69,10 @@ local function hl()
   set("RynoRejected", { fg = get("Comment").fg, strikethrough = true })
   set("RynoRejectedSign", { fg = get("DiagnosticError").fg or get("ErrorMsg").fg, bold = true })
   set("RynoRejectedComment", { fg = get("DiagnosticWarn").fg or get("WarningMsg").fg, italic = true })
+  -- line comments: a tinted band below the commented line(s)
+  local note_fg = get("DiagnosticHint").fg or get("Special").fg or 0x60a0d0
+  set("RynoNote", { fg = note_fg, bg = blend(note_fg, base, 0.10), italic = true })
+  set("RynoNoteSign", { fg = note_fg, bg = blend(note_fg, base, 0.10), bold = true })
   syntax_overlay_cache = {}
 
   -- Winbar: same background as WinBar so nothing looks like a boxed button.
@@ -307,11 +311,18 @@ winbar_impl = function()
     yes, no, yes_all, no_all = "keep", "roll back", "keep all", "roll back all"
   end
   local rights = pend == 0 and {
+    join(hint(k.send, "send"), hint(k.undo, "undo"), hint(k.comment, "comment line"), hint(k.comment_hunk, "comment hunk"), hint(k.next .. "/" .. k.prev, "jump")),
     join(hint(k.send, "send"), hint(k.undo, "undo"), hint(k.comment, "comment"), hint(k.next .. "/" .. k.prev, "jump")),
     join(hint(k.send, "send"), hint(k.undo, "undo")),
     hint(k.send, "send"),
     {},
   } or {
+    join(
+      hint(k.accept, yes), hint(k.reject, no),
+      hint(k.accept_all, yes_all), hint(k.reject_all, no_all),
+      hint(k.undo, "undo"), hint(k.comment, "comment line"), hint(k.comment_hunk, "comment hunk"),
+      hint(k.next .. "/" .. k.prev, "jump")
+    ),
     join(
       hint(k.accept, yes), hint(k.reject, no),
       hint(k.accept_all, yes_all), hint(k.reject_all, no_all),
@@ -428,6 +439,56 @@ local function expand_tabs(s, col, ts)
   return table.concat(out), col
 end
 
+-- ───────────────────────── line comments ("notes") ─────────────────────────
+-- A note comments on lines i..j of one side of a hunk: "new" = proposed lines (h.new), "old" = removed /
+-- original lines (h.old). It does not decide the hunk; a hunk with notes can only be rejected, and its
+-- notes are sent to the agent with the rejection.
+
+--- File line numbers a note covers: in the original file for "old", in the proposed file for "new".
+local function note_rows(h, n)
+  local base = n.side == "old" and h.a_start or h.b_start
+  return base + n.i - 1, base + n.j - 1
+end
+
+local function find_note(h, t)
+  for k, n in ipairs(h.notes or {}) do
+    if n.side == t.side and n.i == t.i and n.j == t.j then return k, n end
+  end
+end
+
+--- Virtual lines for the notes on `side` that end on hunk line `j` (drawn right below that line).
+local function note_virt(r, h, side, j)
+  local out = {}
+  for _, n in ipairs(h.notes or {}) do
+    if n.side == side and n.j == j then
+      local valid = api.nvim_win_is_valid(r.win)
+      local winw = valid and api.nvim_win_get_width(r.win) or 80
+      local textoff = valid and (vim.fn.getwininfo(r.win)[1] or {}).textoff or 0
+      local ts = vim.bo[r.buf].tabstop
+      local text = vim.split(n.text, "\n", { plain = true })
+      if n.j > n.i then text[1] = ("▲ %d lines: %s"):format(n.j - n.i + 1, text[1]) end
+      for k, l in ipairs(text) do
+        local mark = k == 1 and "»" or ""
+        local g = textoff > 0 and (mark .. string.rep(" ", math.max(textoff - vim.fn.strdisplaywidth(mark), 0))) or ""
+        local body = " " .. expand_tabs(l, 0, ts)
+        local pad = math.max(0, winw - vim.fn.strdisplaywidth(g) - vim.fn.strdisplaywidth(body))
+        out[#out + 1] = { { g, "RynoNoteSign" }, { body .. string.rep(" ", pad), "RynoNote" } }
+      end
+    end
+  end
+  return out
+end
+
+--- Notes on buffer rows `first`..`first + count - 1` (hunk lines 1..count of `side`), each below its last line.
+local function place_notes(r, h, side, first, count)
+  for j = 1, count do
+    local nv = note_virt(r, h, side, j)
+    if #nv > 0 then
+      api.nvim_buf_set_extmark(r.buf, ns, first - 2 + j, 0, { virt_lines = nv, virt_lines_leftcol = true, priority = 4200 })
+    end
+  end
+end
+
 local function virt_chunks(r, h, i, selected)
   local done = h.state == "accepted"
   local base = selected and "RynoDeleteCursor" or (done and "RynoDeleteDone" or "RynoDelete")
@@ -457,12 +518,14 @@ local function hunk_virt_lines(r, h)
   local vl = {}
   for i = 1, #h.old do
     if r.vpos and r.vpos.h == h and r.vpos.i == i then
-      vl[i] = virt_chunks(r, h, i, true)
+      vl[#vl + 1] = virt_chunks(r, h, i, true)
     else
       h.vl_cache[i] = h.vl_cache[i] or virt_chunks(r, h, i, false)
-      vl[i] = h.vl_cache[i]
+      vl[#vl + 1] = h.vl_cache[i]
     end
+    for _, x in ipairs(note_virt(r, h, "old", i)) do vl[#vl + 1] = x end
   end
+  h.vl_n = #vl
   return vl
 end
 
@@ -486,13 +549,19 @@ local function rejected_virt(r, h)
   for i = 2, #comment do
     vl[#vl + 1] = { { gutter(""), "RynoRejectedComment" }, { "  " .. expand_tabs(comment[i], 0, ts), "RynoRejectedComment" } }
   end
+  -- never collapse a line that has a comment
+  local limit = MAX_REJECTED_LINES
+  for _, n in ipairs(h.notes or {}) do
+    if n.side == "new" then limit = math.max(limit, n.j) end
+  end
   for i, l in ipairs(h.new) do
-    if i > MAX_REJECTED_LINES then
-      local more = #h.new - MAX_REJECTED_LINES
+    if i > limit then
+      local more = #h.new - limit
       vl[#vl + 1] = { { gutter(""), "RynoRejected" }, { ("… %d more line%s"):format(more, more == 1 and "" or "s"), "Comment" } }
       break
     end
     vl[#vl + 1] = { { gutter("~"), "RynoRejectedSign" }, { (expand_tabs(l, 0, ts)), "RynoRejected" } }
+    for _, x in ipairs(note_virt(r, h, "new", i)) do vl[#vl + 1] = x end
   end
   return vl
 end
@@ -511,6 +580,8 @@ local function place_rejected(r, h)
       sign_text = "✗", sign_hl_group = "RynoRejectedSign", priority = 4200,
     })
   end
+  -- the kept original lines are real rows here: their notes go below them
+  place_notes(r, h, "old", h.display_start, h.display_count)
 end
 
 local function place_virt(r, h)
@@ -528,7 +599,7 @@ local function set_vpos(r, h, i)
   -- into view, or a change to line 1 would show no removed lines at all.
   if h and attach_row(r, h) == 0 and api.nvim_win_is_valid(r.win) then
     api.nvim_win_call(r.win, function()
-      vim.fn.winrestview({ topline = 1, topfill = #h.old })
+      vim.fn.winrestview({ topline = 1, topfill = h.vl_n or #h.old })
     end)
   end
 end
@@ -576,6 +647,7 @@ local function render(r)
           api.nvim_buf_set_extmark(buf, ns, row, sp[1], { end_col = sp[2], hl_group = add_txt, priority = 4300 })
         end
       end
+      place_notes(r, h, "new", h.display_start, h.display_count)
       -- Removed text is virtual above the proposed block (cursorable proposed lines remain in the buffer).
       if #h.old > 0 then
         place_virt(r, h)
@@ -601,8 +673,8 @@ local function cursor_row(r)
   return api.nvim_win_get_cursor(api.nvim_win_is_valid(r.win) and r.win or 0)[1]
 end
 
-local function hunk_at_cursor(r)
-  local row, n = cursor_row(r), api.nvim_buf_line_count(r.buf)
+local function hunk_at_row(r, row)
+  local n = api.nvim_buf_line_count(r.buf)
   for _, h in ipairs(r.hunks) do
     local lo, hi
     if h.display_count > 0 then
@@ -613,6 +685,10 @@ local function hunk_at_cursor(r)
     end
     if row >= lo and row <= hi then return h end
   end
+end
+
+local function hunk_at_cursor(r)
+  return hunk_at_row(r, cursor_row(r))
 end
 
 local function goto_hunk(r, h)
@@ -698,6 +774,11 @@ local function announce(r, h)
       chunks[#chunks + 1] = { text, "Normal" }
     end
   end
+  local nn = #(h.notes or {})
+  if nn > 0 then
+    chunks[#chunks + 1] = { ("%s%d line comment%s%s"):format(#chunks > 0 and "  " or "", nn, nn == 1 and "" or "s",
+      h.state == "pending" and " (reject to send)" or ""), "DiagnosticHint" }
+  end
   local room, out = vim.v.echospace - 1, {}
   for _, c in ipairs(chunks) do
     if room < 2 then break end
@@ -759,8 +840,8 @@ local function cleanup(r)
   if r.buf and api.nvim_buf_is_valid(r.buf) then
     api.nvim_buf_clear_namespace(r.buf, ns, 0, -1)
     pcall(api.nvim_del_augroup_by_name, "RynoReview")
-    for _, lhs in ipairs(r.maps or {}) do
-      pcall(vim.keymap.del, "n", lhs, { buffer = r.buf })
+    for _, m in ipairs(r.maps or {}) do
+      pcall(vim.keymap.del, m[1], m[2], { buffer = r.buf })
     end
     if r.in_file then
       vim.bo[r.buf].modifiable = true
@@ -807,11 +888,22 @@ local function conclude(r, action, extra)
     msg.rejected = {}
     for _, h in ipairs(r.hunks) do
       if h.state == "rejected" then
+        local notes
+        for _, n in ipairs(h.notes or {}) do
+          local a, b = note_rows(h, n)
+          notes = notes or {}
+          notes[#notes + 1] = {
+            side = n.side, line = a, endLine = b,
+            code = table.concat(n.side == "old" and h.old or h.new, "\n", n.i, n.j),
+            comment = n.text,
+          }
+        end
         msg.rejected[#msg.rejected + 1] = {
           line = math.max(1, h.a_start),
           old = table.concat(h.old, "\n"),
           new = table.concat(h.new, "\n"),
           comment = h.comment,
+          notes = notes,
         }
       end
     end
@@ -879,15 +971,10 @@ local function undo_here(r)
   render(r)
 end
 
-local function comment_here(r)
-  local h = hunk_at_cursor(r)
-  if not h or h.state == "accepted" then
-    vim.notify("ryno: comment requires a pending or rejected hunk under cursor", vim.log.levels.INFO)
-    return
-  end
-
+--- Floating editor for a comment. `on_submit(text)` runs only if the review is still active.
+local function edit_comment(r, title, initial_text, on_submit)
   local buf = api.nvim_create_buf(false, true)
-  local initial = vim.split(h.comment or "", "\n", { plain = true })
+  local initial = vim.split(initial_text or "", "\n", { plain = true })
   api.nvim_buf_set_lines(buf, 0, -1, false, initial)
   vim.bo[buf].buftype = "acwrite"
   vim.bo[buf].bufhidden = "wipe"
@@ -898,7 +985,7 @@ local function comment_here(r)
     relative = "editor", width = width, height = height,
     row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
     col = math.max(0, math.floor((vim.o.columns - width) / 2)),
-    style = "minimal", border = "rounded", title = " Comment + reject (Ctrl-S submit, Esc cancel) ",
+    style = "minimal", border = "rounded", title = title,
     title_pos = "center",
   })
   vim.wo[win].wrap = true
@@ -913,21 +1000,92 @@ local function comment_here(r)
     if submit and api.nvim_buf_is_valid(buf) then
       text = table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
     end
+    vim.cmd("stopinsert")
     if api.nvim_win_is_valid(win) then api.nvim_win_close(win, true) end
+    if api.nvim_win_is_valid(r.win) then api.nvim_set_current_win(r.win) end
     if submit and text ~= nil and M.active == r and not r.concluded then
-      h.comment = text ~= "" and text or nil
-      h.state = "rejected"
-      if not maybe_conclude(r, nil, true) then step(r, 1, true) end
+      on_submit(text)
     end
   end
   vim.keymap.set({ "n", "i" }, "<C-s>", function() finish(true) end, { buffer = buf, nowait = true, silent = true })
   vim.keymap.set({ "n", "i" }, "<Esc>", function() finish(false) end, { buffer = buf, nowait = true, silent = true })
 end
 
+--- What a line comment targets: the hunk plus a hunk-relative line range { side, i, j }. That is the removed
+--- (virtual) line under the virtual cursor, or the buffer rows `rows` (default: the cursor row) clamped to
+--- one hunk. The range is nil when the hunk has no real rows to point at (e.g. a rejected insertion).
+local function comment_target(r, rows)
+  if r.vpos and not rows then
+    return r.vpos.h, { side = "old", i = r.vpos.i, j = r.vpos.i }
+  end
+  local lo = rows and rows[1] or cursor_row(r)
+  local hi = rows and rows[2] or lo
+  local h = hunk_at_row(r, lo) or hunk_at_row(r, hi)
+  if not h or h.display_count == 0 then return h, nil end
+  local first = h.display_start
+  lo, hi = math.max(lo, first), math.min(hi, first + h.display_count - 1)
+  if lo > hi then return h, nil end
+  -- a rejected hunk displays its original lines; otherwise the rows are the proposed lines
+  return h, { side = h.state == "rejected" and "old" or "new", i = lo - first + 1, j = hi - first + 1 }
+end
+
+--- Comment on the whole hunk: rejects it (the comment is sent with the rejection).
+local function comment_hunk(r, h)
+  edit_comment(r, " Comment on hunk + reject (Ctrl-S submit, Esc cancel) ", h.comment, function(text)
+    h.comment = text ~= "" and text or nil
+    h.state = "rejected"
+    if not maybe_conclude(r, nil, true) then step(r, 1, true) end
+  end)
+end
+
+--- Comment on the line under the cursor (or the visual range `rows`). Keeps the hunk's state, so several
+--- lines can be commented; rejecting the hunk sends the comments. An empty comment deletes it.
+--- `whole` (or no line to point at) comments on the whole hunk instead.
+local function comment_here(r, rows, whole)
+  local h, t = comment_target(r, rows)
+  if not h or h.state == "accepted" then
+    vim.notify("ryno: comment requires a pending or rejected hunk under cursor (undo an accepted one first)", vim.log.levels.INFO)
+    return
+  end
+  if whole or not t then
+    return comment_hunk(r, h)
+  end
+  local a, b = note_rows(h, t)
+  local where = (a == b and ("line %d"):format(a) or ("lines %d-%d"):format(a, b)) .. (t.side == "old" and " (original)" or " (proposed)")
+  local idx, existing = find_note(h, t)
+  edit_comment(r, (" Comment on %s (Ctrl-S save, Esc cancel) "):format(where), existing and existing.text, function(text)
+    h.notes = h.notes or {}
+    if text:match("^%s*$") then
+      if idx then table.remove(h.notes, idx) end
+    elseif existing then
+      existing.text = text
+    else
+      t.text = text
+      h.notes[#h.notes + 1] = t
+    end
+    render(r)
+    if h.state == "pending" and #h.notes > 0 then
+      local k = M.config.keys
+      api.nvim_echo({
+        { ("ryno: %d line comment%s on this hunk; "):format(#h.notes, #h.notes == 1 and "" or "s"), "Normal" },
+        { show(k.reject or ""), "Special" }, { " rejects it and sends them", "Normal" },
+      }, false, {})
+    end
+  end)
+end
+
+local function has_notes(h)
+  return h.notes ~= nil and #h.notes > 0
+end
+
 local function decide_here(r, state)
   local h = hunk_at_cursor(r)
   if not h or h.state ~= "pending" then
     vim.notify("ryno: no pending hunk under cursor", vim.log.levels.INFO)
+    return
+  end
+  if state == "accepted" and has_notes(h) then
+    vim.notify("ryno: this hunk has line comments: reject it to send them, or clear them (save an empty comment) to accept", vim.log.levels.WARN)
     return
   end
   r.vpos = nil
@@ -939,10 +1097,19 @@ end
 
 local function decide_all(r, state)
   r.vpos = nil
+  local commented = 0
   for _, h in ipairs(r.hunks) do
     if h.state == "pending" then
-      h.state = state
+      -- commented hunks are never accepted wholesale: they are rejected so their comments reach the agent
+      if state == "accepted" and has_notes(h) then
+        h.state, commented = "rejected", commented + 1
+      else
+        h.state = state
+      end
     end
+  end
+  if commented > 0 then
+    vim.notify(("ryno: %d commented hunk%s rejected with %s comments"):format(commented, commented == 1 and "" or "s", commented == 1 and "its" or "their"), vim.log.levels.INFO)
   end
   local acc = diff.counts(r.hunks)
   if state == "rejected" and acc == 0 and M.config.ask_reason then
@@ -958,10 +1125,11 @@ end
 local function set_keys(r)
   local k = M.config.keys
   r.maps = {}
-  local function map(lhs, fn, desc)
+  local function map(lhs, fn, desc, mode)
     if lhs and lhs ~= "" then
-      vim.keymap.set("n", lhs, fn, { buffer = r.buf, nowait = true, silent = true, desc = "ryno: " .. desc })
-      r.maps[#r.maps + 1] = lhs
+      mode = mode or "n"
+      vim.keymap.set(mode, lhs, fn, { buffer = r.buf, nowait = true, silent = true, desc = "ryno: " .. desc })
+      r.maps[#r.maps + 1] = { mode, lhs }
     end
   end
   map(k.accept, function() decide_here(r, "accepted") end, "accept hunk")
@@ -971,7 +1139,13 @@ local function set_keys(r)
   map(k.next, function() step(r, 1) end, "next hunk")
   map(k.prev, function() step(r, -1) end, "previous hunk")
   map(k.undo, function() undo_here(r) end, "undo hunk decision")
-  map(k.comment, function() comment_here(r) end, "comment on rejected hunk")
+  map(k.comment, function() comment_here(r) end, "comment on line")
+  map(k.comment, function()
+    local a, b = vim.fn.line("v"), vim.fn.line(".")
+    api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    comment_here(r, { math.min(a, b), math.max(a, b) })
+  end, "comment on selected lines", "x")
+  map(k.comment_hunk, function() comment_here(r, nil, true) end, "comment on hunk + reject")
   map(k.send, function() send_here(r) end, "send decision")
   -- j/k also walk through the removed (virtual) lines
   map("j", function() vmove(r, 1) end, "down (through removed lines)")

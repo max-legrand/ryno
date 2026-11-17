@@ -44,7 +44,8 @@ local defaults = {
     next = "]c",
     prev = "[c",
     undo = "<leader>iu",
-    comment = "<leader>ic",
+    comment = "<leader>ic", -- comment on the line under the cursor (visual: the selected lines)
+    comment_hunk = "<leader>iC", -- comment on the whole hunk and reject it
     send = "<leader>is", -- send the decision (with confirm_send)
   },
 }

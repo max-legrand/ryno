@@ -214,10 +214,16 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 | `<leader>ia` / `<leader>ir` | accept / reject the hunk under the cursor (then jumps to the next) |
 | `<leader>iA` / `<leader>iR` | accept / reject all remaining hunks |
 | `<leader>iu` | undo the decision for the hunk under the cursor (returns it to pending) |
-| `<leader>ic` | comment on and reject the hunk under the cursor (or edit a rejected hunk's comment); included in the agent's feedback |
+| `<leader>ic` | comment on the line under the cursor (a proposed line, or a removed line via the `▶` cursor); in visual mode, on the selected lines. Re-run on the same line to edit; save an empty comment to delete. The hunk stays pending so you can comment on several lines |
+| `<leader>iC` | comment on the whole hunk and reject it (or edit a rejected hunk's comment) |
 | `]c` / `[c` | next / previous hunk, including accepted/rejected ones (lands on its first removed line; shows a decided hunk's state and comment) |
 | `<leader>is` | send the decision once every hunk is decided (only needed with `confirm_send=true`) |
 | `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
+
+Line comments appear as a tinted `»` band below the line(s) they refer to. A hunk with line comments
+can't be accepted: reject it (`<leader>ir`) to send them to the agent, with the line numbers, the code
+they point at, and whether it is an original or a proposed line. Accept all rejects commented hunks instead
+of accepting them. On a rejected hunk you can still comment on the kept original lines.
 
 Decided hunks stay visible: accepted ones are tinted and marked `✓`; a rejected hunk keeps the original
 lines (marked `✗`) with a `✗ rejected: <comment>` header and the rejected proposal struck through above them.
@@ -248,7 +254,7 @@ were typing elsewhere then go to nvim, so set `focus_pane=false` if that gets in
 
 Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true, focus_pane=true,
 open="current", ask_reason=false, confirm_send=false, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
-reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic", send="<leader>is"}`.
+reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic", comment_hunk="<leader>iC", send="<leader>is"}`.
 
 **Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not
 auto-connected, so it can't grab a review. It's decided once at startup, from the files nvim was opened with:
@@ -368,7 +374,8 @@ agent → editor   {"type":"hello","protocol":1,"pid","cwd","agent","sessionId"}
                  {"type":"resolved","id"}                   // answered elsewhere / aborted / timed out
                  {"type":"applied","id","path","ok"}         // file changed on disk: reload it
 editor → agent   {"type":"decision","id","action":"accept"|"reject"|"partial",
-                  "content"?,"reason"?,"accepted"?,"total"?,"rejected"?:[{"line","old","new"}]}
+                  "content"?,"reason"?,"accepted"?,"total"?,"rejected"?:[{"line","old","new","comment"?,
+                  "notes"?:[{"side":"old"|"new","line","endLine","code","comment"}]}]}
 ```
 
 `original`/`proposed` are LF-normalised; for `partial` send the full resulting `content` (CRLF/BOM are
