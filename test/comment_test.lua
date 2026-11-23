@@ -47,8 +47,7 @@ vim.g.mapleader = " "
 -- 1. comment on proposed line 3 of a 1-hunk change, then reject
 local r = start("c1", "a\nb\nc\nd\n", "a\nB1\nB2\nB3\nd\n")
 ok(r and #r.hunks == 1, "one hunk")
-review.active.vpos = nil
-api.nvim_win_set_cursor(r.win, { 4, 0 }) -- buffer: a, B1, B2, B3, d -> row 4 = B3
+api.nvim_win_set_cursor(r.win, { 6, 0 }) -- unified buffer: a, b, c (removed), B1, B2, B3, d -> row 6 = B3
 require("ryno.review") -- keep local
 api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>ic", true, false, true), "x", false)
 type_comment("use a constant here")
@@ -61,13 +60,11 @@ ok(note_lines(r.buf) == 1, "note rendered as a virtual line")
 review.accept_hunk()
 ok(review.active == r and r.hunks[1].state == "pending", "accept refused for commented hunk")
 
--- comment on a removed (virtual) line: removed line 2 ("c")
-api.nvim_win_set_cursor(r.win, { 2, 0 })
-review.active.vpos = { h = r.hunks[1], i = 2 }
+-- comment on a removed line: removed line 2 ("c") is buffer row 3
+api.nvim_win_set_cursor(r.win, { 3, 0 })
 api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>ic", true, false, true), "x", false)
 type_comment("why remove c?")
-ok(#r.hunks[1].notes == 2 and r.hunks[1].notes[2].side == "old", "note on removed line")
-r.vpos = nil
+ok(#r.hunks[1].notes == 2 and r.hunks[1].notes[2].side == "old" and r.hunks[1].notes[2].i == 2, "note on removed line")
 
 api.nvim_win_set_cursor(r.win, { 2, 0 })
 review.reject_hunk()
@@ -80,8 +77,7 @@ ok(rj and rj.notes[2].side == "old" and rj.notes[2].line == 3 and rj.notes[2].co
 -- 2. visual range comment + accept all rejects commented hunks only
 r = start("c2", "a\nb\nc\nd\ne\nf\ng\n", "a\nB\nc\nd\ne\nF1\nF2\ng\n")
 ok(r and #r.hunks == 2, "two hunks")
-r.vpos = nil
-api.nvim_win_set_cursor(r.win, { 6, 0 })
+api.nvim_win_set_cursor(r.win, { 8, 0 }) -- a, b, B, c, d, e, f, F1, F2, g -> row 8 = F1
 api.nvim_feedkeys(api.nvim_replace_termcodes("Vj<leader>ic", true, false, true), "x", false)
 type_comment("split this")
 local n = r.hunks[2].notes and r.hunks[2].notes[1]
@@ -92,8 +88,7 @@ ok(sent and sent.rejected and sent.rejected[1].notes[1].endLine == 7, "range not
 
 -- 3. empty comment deletes a note
 r = start("c3", "a\nb\n", "a\nX\n")
-r.vpos = nil
-api.nvim_win_set_cursor(r.win, { 2, 0 })
+api.nvim_win_set_cursor(r.win, { 3, 0 }) -- a, b, X
 api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>ic", true, false, true), "x", false)
 type_comment("hmm")
 api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>ic", true, false, true), "x", false)
@@ -103,6 +98,52 @@ ok(#r.hunks[1].notes == 0, "empty comment deletes the note")
 api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>iC", true, false, true), "x", false)
 type_comment("no")
 ok(sent and sent.action == "reject" and sent.rejected[1].comment == "no", "hunk comment rejects")
+
+-- 4. unified layout: removed lines are real buffer lines; re-indented lines are folded
+cfg.keys.layout = "<leader>il"
+r = start("l1", "def f():\n    a = 1\n    b = 2\n    return a\n",
+  "def f():\n    with lock():\n        a = 1\n        b = 2\n    return a\n")
+local text = table.concat(api.nvim_buf_get_lines(r.buf, 0, -1, false), "|")
+ok(text == "def f():|    with lock():|        a = 1|        b = 2|    return a", "re-indent folded: " .. text)
+local long = string.rep("x", 300)
+review.reject_all()
+r = start("l2", "a\n" .. long .. "\nc\n", "a\nB\nc\n")
+local lines = api.nvim_buf_get_lines(r.buf, 0, -1, false)
+ok(lines[2] == long and lines[3] == "B", "removed line is a real (scrollable) buffer line")
+
+-- 5. switch to split: native diff of original | proposed, keys work in both panes
+api.nvim_win_set_cursor(r.win, { 3, 0 })
+api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>il", true, false, true), "x", false)
+ok(r.layout == "split" and r.left and api.nvim_win_is_valid(r.left.win), "split opened")
+ok(vim.wo[r.win].diff and vim.wo[r.left.win].diff, "both panes in diff mode")
+ok(table.concat(api.nvim_buf_get_lines(r.buf, 0, -1, false), "|") == "a|B|c", "proposed pane holds the proposed text")
+ok(table.concat(api.nvim_buf_get_lines(r.left.buf, 0, -1, false), "|") == "a|" .. long .. "|c", "original pane holds the original")
+ok(api.nvim_win_get_cursor(r.win)[1] == 2, "cursor kept on the same line")
+-- comment on the original pane
+api.nvim_set_current_win(r.left.win)
+api.nvim_win_set_cursor(r.left.win, { 2, 0 })
+api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>ic", true, false, true), "x", false)
+type_comment("keep this")
+ok(r.hunks[1].notes and r.hunks[1].notes[1].side == "old" and r.hunks[1].notes[1].i == 1, "comment from the original pane")
+ok(note_lines(r.left.buf) == 1, "note shown in the original pane")
+-- back to unified
+local left_win = r.left.win
+api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>il", true, false, true), "x", false)
+ok(r.layout == "unified" and not r.left and not api.nvim_win_is_valid(left_win), "split closed")
+ok(not vim.wo[r.win].diff, "diff mode off")
+ok(note_lines(r.buf) == 1, "note follows into unified")
+review.reject_hunk()
+ok(sent and sent.action == "reject" and sent.rejected[1].notes[1].code == long, "decision carries the note")
+
+-- 6. configured split layout; decide from the split, and the panes are cleaned up
+cfg.layout = "split"
+r = start("l3", "a\nb\nc\n", "a\nB\nc\n")
+ok(r.layout == "split" and r.left, "starts split")
+left_win = r.left.win
+review.accept_all()
+ok(sent and sent.action == "accept", "accepted from split")
+ok(not api.nvim_win_is_valid(left_win), "original pane closed after the review")
+cfg.layout = nil
 
 print(fails == 0 and "ALL OK" or (fails .. " FAILED"))
 os.exit(fails == 0 and 0 or 1)

@@ -16,10 +16,12 @@ command, or let them pass. Works with **pi**, **prime-agent** (the Rust build), 
 * For structured **edit/write** calls, the agent extension computes the proposed change and sends
   `{original, proposed}` to a connected editor. With an editor connected, nothing touches disk until
   you answer. Arbitrary shell writes use the separate policy described below.
-* **nvim** shows a cursorable review buffer: proposed lines are real buffer lines, while removed
-  lines are shown as virtual lines above them. Syntax colors are retained on both sides of the diff;
-  matching LSP clients can attach to the read-only proposed buffer for diagnostics, hover, completion,
-  and navigation. The buffer uses a temporary same-directory URI; no preview file is written to disk.
+* **nvim** shows a cursorable review buffer: a unified diff where removed and proposed lines are both
+  real buffer lines (so scrolling, wrapping, search and yank work on them), or, switchable with
+  `<leader>il`, the original and proposed text side by side in Neovim's native diff mode.
+  Matching LSP clients can attach to the proposed buffer for hover, completion and navigation
+  (diagnostics are shown in the split layout, where it holds only the proposed text). The buffer uses
+  a temporary same-directory URI; no preview file is written to disk.
   You can read long proposed sections with normal cursor movement and accept/reject **per hunk**.
 * **vis** (no virtual text) shows a unified diff in a split; accept/reject the whole change.
 * The agent is told what happened (rejected, or *"accepted 1 of 2 hunks"* with the rejected hunks
@@ -209,18 +211,23 @@ that assumption. This is a learning workflow, not an isolation boundary for host
 
 ## Using it (nvim)
 
-When the agent wants to edit a file, nvim opens a review buffer with the proposed version and removed lines shown above it (the winbar lists the keys):
+When the agent wants to edit a file, nvim opens a review buffer (the winbar lists the keys). In the
+default `unified` layout each hunk shows its removed lines (red, `-`) followed by the proposed lines
+(green, `+`), all real buffer lines. The `split` layout puts the original in a left pane and the
+proposed text on the right, in native diff mode (`]c`/`[c`, folds and `diffopt` work as usual; on
+Neovim 0.12+ try `set diffopt+=inline:word`). Switch at any time with `<leader>il` / `:RynoLayout`;
+the review keys work in both panes. Set the starting layout with `layout = "unified" | "split"`.
 
 | key (buffer-local, only during a review) | action |
 | --- | --- |
 | `<leader>ia` / `<leader>ir` | accept / reject the hunk under the cursor (then jumps to the next) |
 | `<leader>iA` / `<leader>iR` | accept / reject all remaining hunks |
 | `<leader>iu` | undo the decision for the hunk under the cursor (returns it to pending) |
-| `<leader>ic` | comment on the line under the cursor (a proposed line, or a removed line via the `▶` cursor); in visual mode, on the selected lines. Re-run on the same line to edit; save an empty comment to delete. The hunk stays pending so you can comment on several lines |
+| `<leader>ic` | comment on the line under the cursor (a proposed or a removed/original line); in visual mode, on the selected lines. Re-run on the same line to edit; save an empty comment to delete. The hunk stays pending so you can comment on several lines |
 | `<leader>iC` | comment on the whole hunk and reject it (or edit a rejected hunk's comment) |
-| `]c` / `[c` | next / previous hunk, including accepted/rejected ones (lands on its first removed line; shows a decided hunk's state and comment) |
+| `]c` / `[c` | next / previous hunk, including accepted/rejected ones (shows a decided hunk's state and comment) |
 | `<leader>is` | send the decision once every hunk is decided (only needed with `confirm_send=true`) |
-| `j` / `k` (`<Down>` / `<Up>`) | move through the removed (virtual) lines too: a highlighted `▶` line is the cursor; accept/reject apply to its hunk |
+| `<leader>il` | switch between the unified and the split layout (the cursor stays on the same line) |
 
 **Diff layout.** Hunks separated only by a few unchanged lines (at most `merge_gap`, and at most half
 the size of each neighbouring hunk) are merged, so a rewritten block reads as the whole old block
@@ -229,7 +236,8 @@ match (`return foo(`, `),`). Set `merge_gap=0` to keep every hunk separate. Word
 indentation. With `fold_reindent=true` (default), lines that only changed indentation (e.g. code wrapped
 in a new `with`/`if`) are not shown as removed + added: the old copy is hidden, the new line keeps its
 normal background with a `→`/`←` sign, and only the added indentation is tinted (`RynoIndent`). So
-wrapping a block shows one `+` line. Set `fold_reindent=false` to show them as ordinary changes.
+wrapping a block shows one `+` line. Set `fold_reindent=false` to show them as ordinary changes. (This
+applies to the unified layout; the split layout shows Neovim's own diff.)
 
 Line comments appear as a tinted `»` band below the line(s) they refer to. A hunk with line comments
 can't be accepted: reject it (`<leader>ir`) to send them to the agent, with the line numbers, the code
@@ -237,7 +245,9 @@ they point at, and whether it is an original or a proposed line. Accept all reje
 of accepting them. On a rejected hunk you can still comment on the kept original lines.
 
 Decided hunks stay visible: accepted ones are tinted and marked `✓`; a rejected hunk keeps the original
-lines (marked `✗`) with a `✗ rejected: <comment>` header and the rejected proposal struck through above them.
+lines (marked `✗`) with the rejected proposal struck through above them (and a `✗ rejected: <comment>`
+header when you gave a comment). In the split layout the proposed pane reverts a rejected hunk to the
+original and shows the header and struck-through proposal above it.
 
 When no hunks are pending the decision is sent. With `confirm_send=true`, deciding the last hunk one at a
 time instead leaves the review open (winbar: `ready to send`) so you can still revisit, undo or comment;
@@ -252,7 +262,7 @@ sends its reviews to the linked nvim before any other. `:RynoUnlink` goes back t
 links are forgotten when the session exits. The statusline shows `ryno⚭` while linked.
 
 Commands: `:RynoLink [pid]` `:RynoUnlink` `:RynoConnect[!]` `:RynoDisconnect` `:RynoStatus` `:RynoAuto` (toggle auto-accept)
-`:RynoAccept` `:RynoReject` `:RynoAcceptAll` `:RynoRejectAll` `:RynoNext` `:RynoPrev` `:RynoSend`.
+`:RynoAccept` `:RynoReject` `:RynoAcceptAll` `:RynoRejectAll` `:RynoNext` `:RynoPrev` `:RynoSend` `:RynoLayout`.
 Statusline: `require("ryno").status()`. `/ryno-bash review|block|off` changes and persists the bash policy for this Pi session only. Your local install sets the review keys to `<leader>i…` because `<leader>a` is used by Harpoon.
 
 `:RynoAuto` is **ryno's** auto-accept toggle: while on, nvim accepts every incoming file-change review without asking. It is independent of pi's “auto-confirm shell commands” setting. Auto-confirming bash/read/git commands does not turn on `:RynoAuto` or bypass ryno's `edit`/`write` reviews. In bash `block` mode, the shell write restrictions still apply. Leave `:RynoAuto` off if every file change must be reviewed.
@@ -264,8 +274,8 @@ beside it), but only when nvim's pane is in its session's active tab; it never s
 were typing elsewhere then go to nvim, so set `focus_pane=false` if that gets in the way.
 
 Options (defaults): `auto_connect=true, poll_ms=3000, match_cwd=true, auto_accept=false, focus=true, focus_pane=true,
-open="current", ask_reason=false, confirm_send=false, merge_gap=3, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
-reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic", comment_hunk="<leader>iC", send="<leader>is"}`.
+open="current", layout="unified", ask_reason=false, confirm_send=false, merge_gap=3, fold_reindent=true, keys={accept="<leader>ia", reject="<leader>ir", accept_all="<leader>iA",
+reject_all="<leader>iR", next="]c", prev="[c", undo="<leader>iu", comment="<leader>ic", comment_hunk="<leader>iC", send="<leader>is", layout="<leader>il"}`.
 
 **Throwaway editors.** An nvim started as `$EDITOR` for `jj desc`, `git commit`, a rebase todo etc. is not
 auto-connected, so it can't grab a review. It's decided once at startup, from the files nvim was opened with:

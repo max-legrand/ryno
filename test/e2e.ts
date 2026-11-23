@@ -102,7 +102,7 @@ for (const o of obs) console.log("  ", JSON.stringify(o));
 const ap = obs.find((o) => o.ev === "applied" && o.id === "t_accept");
 ok(ap?.text === "one|TWO|three|four|five|SIX|SIX2|seven" && ap?.modifiable === true && ap?.winbar === "", "buffer reloaded after applied, unlocked, winbar restored: " + ap?.text);
 const rv = (id: string) => obs.find((o) => o.ev === "review" && o.id === id);
-ok(rv("t_accept")?.hunks === 2 && rv("t_accept")?.virt_lines === 2 && rv("t_accept")?.scratch === true, "review buffer shows real proposed lines plus removed-line virtual text");
+ok(rv("t_accept")?.hunks === 2 && rv("t_accept")?.buftext === "one|two|TWO|three|four|five|six|SIX|SIX2|seven" && rv("t_accept")?.scratch === true, "unified review buffer shows removed and proposed lines as real lines: " + rv("t_accept")?.buftext);
 ok(rv("t_accept")?.buftext.includes("TWO") && rv("t_accept")?.buftext.includes("SIX2"), "long proposed sections are real cursorable buffer lines");
 ok(rv("t_accept")?.modifiable === false, "buffer locked during review");
 ok(rv("t_after")?.hunks === 2, "nvim showed the review for the replaced session (the /new bug)");

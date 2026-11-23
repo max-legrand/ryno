@@ -12,6 +12,9 @@ local defaults = {
   focus_pane = true, -- in Rex, focus this nvim's pane when a review opens (only within the active tab)
   open = "current", -- where the review opens: "current" window, "split", "vsplit", or a new "tab"
   review_in_file = false, -- preview in the loaded, unmodified file buffer instead of a .ryno preview buffer
+  -- "unified": removed and added lines in one buffer; "split": original | proposed in native diff mode.
+  -- Switch during a review with keys.layout.
+  layout = "unified",
   ask_reason = false, -- prompt for a reason when rejecting everything
   -- After deciding the last hunk one by one, wait for keys.send instead of sending right away
   -- (accept all / reject all always send immediately).
@@ -54,6 +57,7 @@ local defaults = {
     comment = "<leader>ic", -- comment on the line under the cursor (visual: the selected lines)
     comment_hunk = "<leader>iC", -- comment on the whole hunk and reject it
     send = "<leader>is", -- send the decision (with confirm_send)
+    layout = "<leader>il", -- switch between the unified and split layouts
   },
 }
 

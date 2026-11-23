@@ -40,3 +40,4 @@ cmd("RynoRejectAll", function() r().review.reject_all() end, "Reject all pending
 cmd("RynoNext", function() r().review.next_hunk() end, "Jump to next hunk")
 cmd("RynoPrev", function() r().review.prev_hunk() end, "Jump to previous hunk")
 cmd("RynoSend", function() r().review.send_review() end, "Send the review decision (all hunks decided)")
+cmd("RynoLayout", function() r().review.toggle_layout() end, "Switch the review between unified and split layouts")
