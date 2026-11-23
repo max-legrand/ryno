@@ -36,6 +36,8 @@ ln -s "$PWD/extension/ryno.ts" ~/.pi/agent/extensions/ryno.ts     # then /reload
 # one-off: pi -e ./extension/ryno.ts
 ```
 
+In-process Pi subagents that load Ryno send their edit reviews through the parent session's editor connection. If a subagent disables extensions or uses an extension allowlist, make sure Ryno is included for any subagent that can write files. Install it in Pi's extensions directory rather than relying on the parent's one-off `-e` flag.
+
 **prime-agent (Rust build)** — native extension (needs `node` ≥ 23.6 or `bun`, and `python3`). Add the
 manifest to the **global** `~/.prime/agent/settings.json`, then start a new session:
 

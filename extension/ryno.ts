@@ -553,7 +553,7 @@ export default function ryno(pi: ExtensionAPI) {
 	const send = (sock: net.Socket, msg: unknown) => {
 		if (!sock.destroyed) sock.write(JSON.stringify(msg) + "\n");
 	};
-	const broadcast = (msg: unknown) => clients.forEach((c) => send(c, msg));
+	const broadcast = (msg: unknown) => connection().clients.forEach((c) => send(c, msg));
 	const realOrSelf = (p: string) => {
 		try { return fs.realpathSync(p); } catch {}
 		try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); } catch {}
@@ -705,9 +705,28 @@ export default function ryno(pi: ExtensionAPI) {
 		server?.close();
 		server = null;
 		watchFocus(false);
-		for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {}
+		process.off("exit", cleanSocket);
+		cleanSocket();
+		if (host.__rynoConnection === local) {
+			delete host.__rynoConnection;
+			delete host.__rynoApi;
+		}
 	}
-	process.on("exit", () => { for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {} });
+	const cleanSocket = () => { for (const f of [sockPath, descPath]) try { fs.unlinkSync(f); } catch {} };
+	const local = { clients, pickEditors, askEditor, settle, mode: () => rynoMode, bashMode: () => bashMode, stop };
+	const host = globalThis as typeof globalThis & { __rynoConnection?: typeof local; __rynoApi?: unknown };
+	let parent: typeof local | undefined;
+	const connection = () => parent ?? local;
+	const childId = randomUUID();
+	const reviewId = (toolCallId: string) => parent ? `${childId}:${toolCallId}` : toolCallId;
+	const childPending = new Set<string>();
+
+	async function requestReview(msg: { id: string } & Record<string, unknown>, opts?: { signal?: AbortSignal; timeoutMs?: number }) {
+		if (!parent) return askEditor(msg, opts);
+		childPending.add(msg.id);
+		try { return await parent.askEditor(msg, opts); }
+		finally { childPending.delete(msg.id); }
+	}
 
 	const saveSessionSettings = (mode = rynoMode, bash = bashMode) => {
 		pi.appendEntry?.("ryno-settings", { mode, bash });
@@ -733,14 +752,28 @@ export default function ryno(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_tree", async (_e: any, ctx: any) => {
+		if (parent) return;
 		restoreSessionSettings(ctx);
 		updateStatus();
 	});
 
 	pi.on("session_start", async (_e: any, ctx: any) => {
+		info = { cwd: ctx.cwd, sessionId: safe(() => ctx.sessionManager.getSessionId()) ?? "" };
+		const owner = host.__rynoConnection;
+		// Pi subagents bind their own headless extensions inside the already-running Pi process.
+		// Keep the parent's socket and editor selection, but continue resolving paths in the child.
+		if (owner && owner !== local && ctx.hasUI === false) {
+			parent = owner;
+			return;
+		}
+		if (owner !== local) {
+			owner?.stop(); // replace a stale owner if a new interactive session starts without shutdown
+			host.__rynoConnection = local;
+			host.__rynoApi = { hasEditors: () => clients.size > 0, reviewChanges, bashMode: local.bashMode, mode: local.mode };
+			process.once("exit", cleanSocket);
+		}
 		uiRef = ctx.ui;
 		restoreSessionSettings(ctx);
-		info = { cwd: ctx.cwd, sessionId: safe(() => ctx.sessionManager.getSessionId()) ?? "" };
 		start();
 		watchFocus(true);
 		if (server?.listening) writeDescriptor();
@@ -751,7 +784,7 @@ export default function ryno(pi: ExtensionAPI) {
 	// must not outlive its session: an orphaned server keeps editors attached to a handler nobody runs.
 	pi.on("before_agent_start", async (event: any) => {
 		if (typeof event?.systemPrompt !== "string") return;
-		const prompt = rynoMode === "review" ? REVIEW_PROMPT : bashMode === "block" ? BLOCK_PROMPT : null;
+		const prompt = connection().mode() === "review" ? REVIEW_PROMPT : connection().bashMode() === "block" ? BLOCK_PROMPT : null;
 		if (prompt) return { systemPrompt: event.systemPrompt + "\n\n" + prompt };
 	});
 
@@ -804,8 +837,9 @@ export default function ryno(pi: ExtensionAPI) {
 			required: ["findings"], additionalProperties: false,
 		} as any,
 		async execute(_id: string, params: any, _signal: any, _update: any, ctx: any) {
-			if (rynoMode !== "review") return { content: [{ type: "text", text: "Review annotations are disabled in edit mode. Respond in chat instead." }], details: {}, isError: true };
-			if (!clients.size) return { content: [{ type: "text", text: "No editor connected. Give the review in chat or retry after connecting Neovim." }], details: {}, isError: true };
+			const editorConnection = connection();
+			if (editorConnection.mode() !== "review") return { content: [{ type: "text", text: "Review annotations are disabled in edit mode. Respond in chat instead." }], details: {}, isError: true };
+			if (!editorConnection.clients.size) return { content: [{ type: "text", text: "No editor connected. Give the review in chat or retry after connecting Neovim." }], details: {}, isError: true };
 			// Validate the entire batch before replacing any existing annotations.
 			const findings = params.findings.map((f: any) => {
 				const file = resolvePath(ctx.cwd, f.path);
@@ -815,8 +849,8 @@ export default function ryno(pi: ExtensionAPI) {
 				if (f.line > count) throw new Error(`Line ${f.line} is beyond ${f.path} (${count} lines). Re-read the file.`);
 				return { path: file, line: f.line, title: f.title, body: f.body };
 			});
-			const batches = new Map([...clients].map((c) => [c, [] as any[]]));
-			for (const f of findings) for (const editor of pickEditors(f.path)) batches.get(editor)!.push(f);
+			const batches = new Map([...editorConnection.clients].map((c) => [c, [] as any[]]));
+			for (const f of findings) for (const editor of editorConnection.pickEditors(f.path)) batches.get(editor)!.push(f);
 			for (const [editor, batch] of batches) send(editor, { type: "findings", findings: batch });
 			return {
 				content: [{ type: "text", text: `Sent ${findings.length} review comment(s) to the connected editor(s). No files changed. Summarize briefly in chat.` }],
@@ -861,23 +895,25 @@ export default function ryno(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		stop();
+		if (parent) {
+			for (const id of childPending) parent.settle(id, { action: "reject", reason: "agent session ended", system: true });
+		} else if (host.__rynoConnection === local) stop();
 	});
-
-	// Belt and braces: if a previous instance in this process was never told to shut down, evict it.
-	const g = globalThis as any;
-	try { g.__rynoStop?.(); } catch {}
-	g.__rynoStop = stop;
 
 	/** Send a review to the connected editors and wait for the first answer. */
 	function askEditor(msg: { id: string } & Record<string, unknown>, opts: { signal?: AbortSignal; timeoutMs?: number } = {}) {
 		const id = msg.id;
 		return new Promise<Decision | SystemReject>((resolve) => {
-			const p: Pending = { msg, resolve };
+			if (opts.signal?.aborted) return resolve({ action: "reject", reason: "aborted", system: true });
+			const abort = () => settle(id, { action: "reject", reason: "aborted", system: true });
+			const p: Pending = { msg, resolve: (decision) => {
+				opts.signal?.removeEventListener("abort", abort);
+				resolve(decision);
+			} };
 			const firstPending = pending.size === 0;
 			pending.set(id, p);
 			reportProgramStatus(firstPending && userIsLooking());
-			opts.signal?.addEventListener("abort", () => settle(id, { action: "reject", reason: "aborted", system: true }), { once: true });
+			opts.signal?.addEventListener("abort", abort, { once: true });
 			route(p);
 			const ms = Number(opts.timeoutMs ?? process.env.RYNO_TIMEOUT_MS);
 			if (ms > 0) {
@@ -897,13 +933,13 @@ export default function ryno(pi: ExtensionAPI) {
 	 * Answers that are not a user choice (editor gone, timeout) keep the changes.
 	 */
 	async function reviewChanges(changes: Change[], cwd: string, label: string, timeoutMs?: number) {
-		if (rynoMode === "review") return { kept: [], rolledBack: [], partial: [], unreviewed: [], needsAttention: false, text: REVIEW_BLOCK_REASON };
+		if (connection().mode() === "review") return { kept: [], rolledBack: [], partial: [], unreviewed: [], needsAttention: false, text: REVIEW_BLOCK_REASON };
 		const kept: string[] = [], rolledBack: string[] = [], partial: string[] = [], unreviewed: string[] = [];
 		for (const c of changes) {
 			const strip = (t: string) => lf(t.replace(/^\ufeff/, ""));
 			const rel = c.rel;
 			const id = randomUUID();
-			const d = await askEditor(
+			const d = await requestReview(
 				{
 					type: "review", id, tool: label, path: c.abs, relpath: path.relative(rp(cwd), c.abs) || rel,
 					isNew: c.original === null, deleted: c.proposed === null, post: true,
@@ -943,13 +979,15 @@ export default function ryno(pi: ExtensionAPI) {
 		return { kept, rolledBack, partial, unreviewed, needsAttention, text };
 	}
 
-	(globalThis as any).__rynoApi = { hasEditors: () => clients.size > 0, reviewChanges, bashMode: () => bashMode, mode: () => rynoMode };
-
 	// ── the interception ──
 
 	pi.on("tool_call", async (event: any, ctx: any) => {
-		dbg("tool_call", event.toolName, "editors:", clients.size, "input:", event.input);
-		if (rynoMode === "review") {
+		const editorConnection = connection();
+		dbg("tool_call", event.toolName, "editors:", editorConnection.clients.size, "input:", event.input);
+		if (parent && host.__rynoConnection !== parent && !REVIEW_READ_TOOLS.has(event.toolName)) {
+			return { block: true, reason: "ryno: parent review session ended" };
+		}
+		if (editorConnection.mode() === "review") {
 			if (REVIEW_READ_TOOLS.has(event.toolName) || (event.toolName === "ryno_findings" && pi.registerTool)) return;
 			// Adapters whose hosts cannot rewrite commands must refuse shell execution entirely.
 			if (event.toolName === "bash" && event.readOnlyShell !== false && typeof event.input?.command === "string") {
@@ -959,14 +997,14 @@ export default function ryno(pi: ExtensionAPI) {
 			return { block: true, reason: REVIEW_BLOCK_REASON + " Use read/search/list tools; shell execution requires an enforceable read-only sandbox." };
 		}
 		if (event.toolName === "bash") {
-			const mode = bashMode;
+			const mode = editorConnection.bashMode();
 			if (mode === "off" || typeof event.input?.command !== "string") return;
-			if (mode === "review" && clients.size === 0) return; // nobody to review with
+			if (mode === "review" && editorConnection.clients.size === 0) return; // nobody to review with
 			const snap = takeSnapshot(ctx.cwd);
 			let profile: string | undefined;
 			let sandboxed = false;
 			if (mode === "block" && snap) {
-				profile = path.join(dir, `sb-${process.pid}-${String(event.toolCallId).replace(/[^\w-]/g, "_")}.sb`);
+				profile = path.join(dir, `sb-${process.pid}-${String(reviewId(event.toolCallId)).replace(/[^\w-]/g, "_")}.sb`);
 				const wrapped = sandboxCommand(event.input.command, snap.root, profile);
 				if (wrapped) {
 					event.input.command = wrapped; // documented: tool_call may mutate the input in place
@@ -999,7 +1037,7 @@ export default function ryno(pi: ExtensionAPI) {
 		}
 		if (original === proposed) return void dbg("skip: no-op"); // no-op
 
-		if (clients.size === 0) {
+		if (editorConnection.clients.size === 0) {
 			dbg("skip: no editor connected");
 			if ((process.env.RYNO_NO_EDITOR ?? "allow") === "block") {
 				return { block: true, reason: "ryno: no editor connected to review this change (RYNO_NO_EDITOR=block)" };
@@ -1007,7 +1045,7 @@ export default function ryno(pi: ExtensionAPI) {
 			return;
 		}
 
-		const id: string = event.toolCallId;
+		const id = reviewId(event.toolCallId);
 		const msg = {
 			type: "review",
 			id,
@@ -1020,7 +1058,7 @@ export default function ryno(pi: ExtensionAPI) {
 			proposed,
 		};
 
-		const decision = await askEditor(msg, { signal: ctx.signal, timeoutMs: event.timeoutMs });
+		const decision = await requestReview(msg, { signal: ctx.signal, timeoutMs: event.timeoutMs });
 
 		const rel = msg.relpath;
 		if (decision.action === "accept") return;
@@ -1071,7 +1109,7 @@ export default function ryno(pi: ExtensionAPI) {
 				return note ? { content: [...(event.content ?? []), { type: "text", text: note }] } : undefined;
 			}
 
-			if (changes.length === 0 || clients.size === 0) return;
+			if (changes.length === 0 || connection().clients.size === 0) return;
 			if (changes.length > MAX_REVIEW_FILES) {
 				return { content: [...(event.content ?? []), { type: "text", text: `[ryno] ${changes.length} files changed; too many to review in the editor, so none were.` }] };
 			}
@@ -1081,7 +1119,7 @@ export default function ryno(pi: ExtensionAPI) {
 		if (event.toolName !== "edit" && event.toolName !== "write") return;
 		const p = (event.input as any)?.path;
 		if (typeof p !== "string") return;
-		broadcast({ type: "applied", id: event.toolCallId, path: resolvePath(info.cwd, p), ok: !event.isError });
+		broadcast({ type: "applied", id: reviewId(event.toolCallId), path: resolvePath(info.cwd, p), ok: !event.isError });
 	});
 }
 

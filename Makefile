@@ -9,6 +9,7 @@ test:
 	nvim -l test/comment_test.lua 2>&1 | grep -E "FAIL|ALL OK|FAILED"
 	bun test/core_test.ts
 	bun test/review_mode.ts
+	bun test/subagents.ts
 	bun test/findings_e2e.ts
 	bun test/hooks_unit.ts
 	bun test/e2e.ts | grep -E "FAIL|ALL OK|FAILED"
