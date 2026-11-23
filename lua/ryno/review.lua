@@ -498,6 +498,25 @@ local function place_notes(r, h, side, first, count)
   end
 end
 
+--- Long removed lines would otherwise be cut off at the window edge (virtual lines are truncated by
+--- default). Newer Neovim follows 'wrap' ("auto"); 0.11 can at least scroll them with the buffer.
+local overflow_mode
+local function with_overflow(opts)
+  if overflow_mode == nil then
+    overflow_mode = false
+    local probe = api.nvim_create_buf(false, true)
+    for _, mode in ipairs({ "auto", "scroll" }) do
+      if pcall(api.nvim_buf_set_extmark, probe, ns, 0, 0, { virt_lines = { { { "" } } }, virt_lines_overflow = mode }) then
+        overflow_mode = mode
+        break
+      end
+    end
+    api.nvim_buf_delete(probe, { force = true })
+  end
+  if overflow_mode then opts.virt_lines_overflow = overflow_mode end
+  return opts
+end
+
 local function virt_chunks(r, h, i, selected)
   local done = h.state == "accepted"
   local base = selected and "RynoDeleteCursor" or (done and "RynoDeleteDone" or "RynoDelete")
@@ -596,9 +615,9 @@ local function place_rejected(r, h)
   -- above the kept lines (or the line after a rejected insertion); below the last line at EOF
   local above = h.display_start <= n
   h.rej_n, h.rej_above = #vl, above
-  api.nvim_buf_set_extmark(r.buf, ns, above and math.max(0, h.display_start - 1) or math.max(0, n - 1), 0, {
+  api.nvim_buf_set_extmark(r.buf, ns, above and math.max(0, h.display_start - 1) or math.max(0, n - 1), 0, with_overflow({
     virt_lines = vl, virt_lines_above = above, virt_lines_leftcol = true, priority = 4200,
-  })
+  }))
   for i = 0, h.display_count - 1 do
     api.nvim_buf_set_extmark(r.buf, ns, h.display_start - 1 + i, 0, {
       sign_text = "✗", sign_hl_group = "RynoRejectedSign", priority = 4200,
@@ -609,9 +628,9 @@ local function place_rejected(r, h)
 end
 
 local function place_virt(r, h)
-  h.vl_id = api.nvim_buf_set_extmark(r.buf, ns, attach_row(r, h), 0, {
+  h.vl_id = api.nvim_buf_set_extmark(r.buf, ns, attach_row(r, h), 0, with_overflow({
     id = h.vl_id, virt_lines = hunk_virt_lines(r, h), virt_lines_above = true, virt_lines_leftcol = true, priority = 4200,
-  })
+  }))
 end
 
 local function set_vpos(r, h, i)
