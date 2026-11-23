@@ -54,6 +54,16 @@ eq(inl("  x = foo(1)", "      x = foo(2)"), { { "1" }, { "2" } }, "inline: re-in
 local ro, rn = d.inline_hunk({ "try:", "  a()" }, { "    try:", "      a()" })
 eq({ ro[1], ro[2], rn[1], rn[2] }, { {}, {}, {}, {} }, "inline_hunk: re-indented lines paired without emphasis")
 
+-- wrapping a block in `with lock():` = one new line plus re-indented lines
+local mo, mn = d.reindented(
+  { "a = 1", "b = 2", "", "c = 3", "d = 4" },
+  { "with lock():", "    a = 1", "    b = 2", "", "    c = 30", "    d = 4" }
+)
+eq(mo, { [1] = 2, [2] = 3, [5] = 6 }, "reindented: old lines that only moved in")
+eq(mn, { [2] = 1, [3] = 2, [6] = 5 }, "reindented: new line 1 and changed c are real changes")
+local mo2 = d.reindented({ "x" }, { "x" })
+eq(mo2, {}, "reindented: identical lines are not re-indents")
+
 -- hunk merging: a rewritten block separated by a couple of generic matching lines becomes one hunk
 local OLD = "head\no1\no2\no3\no4\nreturn x(\nok=False,\no5\no6\no7\no8\ntail\n"
 local NEW = "head\nn1\nn2\nn3\nn4\nn5\nreturn x(\nok=False,\nn6\nn7\nn8\nn9\ntail\n"

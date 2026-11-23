@@ -226,8 +226,10 @@ When the agent wants to edit a file, nvim opens a review buffer with the propose
 the size of each neighbouring hunk) are merged, so a rewritten block reads as the whole old block
 followed by the whole new block, instead of fragments interleaved with generic lines that happened to
 match (`return foo(`, `),`). Set `merge_gap=0` to keep every hunk separate. Word-level emphasis ignores
-indentation, so a re-indented block (e.g. code wrapped in a new `with`/`if`) is not a wall of highlighted
-whitespace.
+indentation. With `fold_reindent=true` (default), lines that only changed indentation (e.g. code wrapped
+in a new `with`/`if`) are not shown as removed + added: the old copy is hidden, the new line keeps its
+normal background with a `→`/`←` sign, and only the added indentation is tinted (`RynoIndent`). So
+wrapping a block shows one `+` line. Set `fold_reindent=false` to show them as ordinary changes.
 
 Line comments appear as a tinted `»` band below the line(s) they refer to. A hunk with line comments
 can't be accepted: reject it (`<leader>ir`) to send them to the agent, with the line numbers, the code

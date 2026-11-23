@@ -64,6 +64,9 @@ local function hl()
   set("RynoDeleteText", { bg = del_text_bg })
   set("RynoDeleteCursor", { bg = del_cursor_bg, bold = true }) -- removed line under the virtual cursor
   set("RynoAddDone", { bg = change_bg })
+  -- indentation-only lines: just a sign and the changed indentation, no full-line tint
+  set("RynoIndent", { bg = blend(get("Added").fg or get("DiffAdd").fg or 0x40c060, base, 0.10) })
+  set("RynoIndentSign", { fg = get("Comment").fg })
   set("RynoDeleteDone", { bg = change_bg })
   -- rejected hunks: the original text stays (✗ signs), the rejected proposal is shown struck through
   set("RynoRejected", { fg = get("Comment").fg, strikethrough = true })
@@ -519,10 +522,25 @@ local function virt_chunks(r, h, i, selected)
   return chunks
 end
 
+--- Which removed lines are drawn (and walked by the virtual cursor): all of them, minus lines that only
+--- changed indentation when `fold_reindent` is on (their new copy is shown instead).
+local function shown_old(h)
+  if h.old_shown then return h.old_shown end
+  if M.config.fold_reindent ~= false and not h.old_moved then
+    h.old_moved, h.new_moved = diff.reindented(h.old, h.new)
+  end
+  local out = {}
+  for i = 1, #h.old do
+    if not (h.old_moved and h.old_moved[i]) then out[#out + 1] = i end
+  end
+  h.old_shown = out
+  return out
+end
+
 local function hunk_virt_lines(r, h)
   h.vl_cache = h.vl_cache or {}
   local vl = {}
-  for i = 1, #h.old do
+  for _, i in ipairs(shown_old(h)) do
     if r.vpos and r.vpos.h == h and r.vpos.i == i then
       vl[#vl + 1] = virt_chunks(r, h, i, true)
     else
@@ -605,7 +623,7 @@ local function set_vpos(r, h, i)
   -- into view, or a change to line 1 would show no removed lines at all.
   if h and attach_row(r, h) == 0 and api.nvim_win_is_valid(r.win) then
     api.nvim_win_call(r.win, function()
-      vim.fn.winrestview({ topline = 1, topfill = h.vl_n or #h.old })
+      vim.fn.winrestview({ topline = 1, topfill = h.vl_n or #shown_old(h) })
     end)
   end
 end
@@ -631,8 +649,24 @@ local function render(r)
       -- Proposed lines are actual buffer lines: readable, searchable, and reachable with j/k/C-d.
       -- Word-level emphasis on lines that are edits of each other (computed once per hunk).
       if not h.new_spans then h.old_spans, h.new_spans = diff.inline_hunk(h.old, h.new) end
+      shown_old(h)
       for i = 0, h.display_count - 1 do
         local row = h.display_start - 1 + i
+        local from = h.new_moved and h.new_moved[i + 1]
+        if from then
+          -- Only the indentation changed: tint just the indentation that differs.
+          local line = h.new[i + 1]
+          local a, b = #h.old[from]:match("^%s*"), #line:match("^%s*")
+          api.nvim_buf_set_extmark(buf, ns, row, 0, {
+            sign_text = done and "✓" or (b > a and "→" or "←"),
+            sign_hl_group = done and add_hl or "RynoIndentSign",
+            priority = 4200,
+          })
+          if b > a then
+            api.nvim_buf_set_extmark(buf, ns, row, a, { end_col = b, hl_group = "RynoIndent", strict = false, priority = 4200 })
+          end
+          goto next_line
+        end
         -- A ranged hl_group (to the end of the screen line) rather than line_hl_group: line_hl_group
         -- paints over every other highlight on the line, which would hide the word emphasis below.
         -- (The sign is a separate mark: a multi-row mark shows its sign on every row it touches.)
@@ -652,10 +686,11 @@ local function render(r)
         for _, sp in ipairs(not done and h.new_spans[i + 1] or {}) do
           api.nvim_buf_set_extmark(buf, ns, row, sp[1], { end_col = sp[2], hl_group = add_txt, priority = 4300 })
         end
+        ::next_line::
       end
       place_notes(r, h, "new", h.display_start, h.display_count)
       -- Removed text is virtual above the proposed block (cursorable proposed lines remain in the buffer).
-      if #h.old > 0 then
+      if #shown_old(h) > 0 then
         place_virt(r, h)
       end
     else
@@ -706,8 +741,8 @@ local function goto_hunk(r, h)
     end)
   end
   -- land on the first removed line when the hunk has one (it is displayed above the proposed lines)
-  if h.state ~= "rejected" and #h.old > 0 then
-    set_vpos(r, h, 1)
+  if h.state ~= "rejected" and #shown_old(h) > 0 then
+    set_vpos(r, h, shown_old(h)[1])
   else
     set_vpos(r, nil)
     -- a rejected hunk's header above line 1 is only drawn as window filler: scroll it into view
@@ -725,8 +760,13 @@ local function vstep(r, dir)
   local vp = r.vpos
   local left_up = false
   if vp then
-    local ni = vp.i + dir
-    if ni >= 1 and ni <= #vp.h.old then
+    local shown = shown_old(vp.h)
+    local pos = 0
+    for k, i in ipairs(shown) do
+      if i == vp.i then pos = k end
+    end
+    local ni = shown[pos + dir]
+    if pos > 0 and ni then
       set_vpos(r, vp.h, ni)
       return
     end
@@ -739,7 +779,7 @@ local function vstep(r, dir)
   local row = cursor_row(r)
   local function virt_hunk_at(target)
     for _, h in ipairs(r.hunks) do
-      if h.state ~= "rejected" and #h.old > 0 and attach_row(r, h) + 1 == target then
+      if h.state ~= "rejected" and #shown_old(h) > 0 and attach_row(r, h) + 1 == target then
         return h
       end
     end
@@ -748,12 +788,13 @@ local function vstep(r, dir)
     local h = virt_hunk_at(row + 1)
     pcall(vim.cmd, "normal! j")
     if h and cursor_row(r) == row + 1 then
-      set_vpos(r, h, 1)
+      set_vpos(r, h, shown_old(h)[1])
     end
   else
     local h = not left_up and virt_hunk_at(row)
     if h then
-      set_vpos(r, h, #h.old)
+      local shown = shown_old(h)
+      set_vpos(r, h, shown[#shown])
     else
       pcall(vim.cmd, "normal! k")
     end

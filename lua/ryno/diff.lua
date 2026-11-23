@@ -251,6 +251,39 @@ function M.inline_hunk(old, new)
   return old_spans, new_spans
 end
 
+--- Lines of a hunk that only changed indentation, matched by diffing the lines with leading whitespace
+--- removed (so wrapping a block in `with lock():` pairs every re-indented line, not just the first few).
+--- Returns old_moved[i] = j and new_moved[j] = i for each such pair; blank lines are never paired.
+---@return table<integer, integer>, table<integer, integer>
+function M.reindented(old, new)
+  local old_moved, new_moved = {}, {}
+  if #old == 0 or #new == 0 then return old_moved, new_moved end
+  local function strip(lines)
+    local out = {}
+    for i, l in ipairs(lines) do out[i] = (l:gsub("^%s+", "")) end
+    return out
+  end
+  local so, sn = strip(old), strip(new)
+  local idx = vim.diff(as_text(so), as_text(sn), {
+    result_type = "indices", algorithm = "histogram", ctxlen = 0, interhunkctxlen = 0,
+  })
+  -- Walk the unchanged runs between the stripped-text hunks.
+  local i, j = 1, 1
+  local function take(until_i)
+    while i < until_i do
+      if so[i] ~= "" and old[i] ~= new[j] then old_moved[i], new_moved[j] = j, i end
+      i, j = i + 1, j + 1
+    end
+  end
+  for _, h in ipairs(idx) do
+    local first_old = h[2] > 0 and h[1] or h[1] + 1
+    take(first_old)
+    i, j = first_old + h[2], (h[4] > 0 and h[3] or h[3] + 1) + h[4]
+  end
+  take(#old + 1)
+  return old_moved, new_moved
+end
+
 function M.counts(hunks)
   local acc, rej, pend = 0, 0, 0
   for _, h in ipairs(hunks) do

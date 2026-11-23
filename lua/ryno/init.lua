@@ -19,6 +19,10 @@ local defaults = {
   -- merge hunks separated by at most this many unchanged lines when both are at least twice that size,
   -- so a rewritten block reads as one old block then one new block (0 = never merge)
   merge_gap = 3,
+  -- Lines that only changed indentation (a block wrapped in `with lock():`, `if`, `try`...) are not shown
+  -- as removed + added: the old copy is hidden and the new line keeps its normal background, with an
+  -- indent sign and only the added/removed indentation tinted. false = show them like any other change.
+  fold_reindent = true,
   -- Don't auto-connect nvims that were opened as a throwaway $EDITOR (`jj desc`, `git commit`, rebase
   -- todo...), so they never steal a review. Decided once from the files nvim was started with.
   -- Manual :RynoConnect / :RynoLink still work. Also off when $RYNO_DISABLE is set.
