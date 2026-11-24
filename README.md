@@ -244,8 +244,8 @@ can't be accepted: reject it (`<leader>ir`) to send them to the agent, with the 
 they point at, and whether it is an original or a proposed line. Accept all rejects commented hunks instead
 of accepting them. On a rejected hunk you can still comment on the kept original lines.
 
-Decided hunks stay visible: accepted ones are tinted and marked `✓`; a rejected hunk keeps the original
-lines (marked `✗`) with the rejected proposal struck through above them (and a `✗ rejected: <comment>`
+In unified view, accepting a hunk hides its removed lines and marks the kept changes with `✓`.
+A rejected hunk keeps the original lines (marked `✗`) with the rejected proposal struck through above them (and a `✗ rejected: <comment>`
 header when you gave a comment). In the split layout the proposed pane reverts a rejected hunk to the
 original and shows the header and struck-through proposal above it.
 

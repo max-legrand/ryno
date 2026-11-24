@@ -64,7 +64,6 @@ local function hl()
   set("RynoAddText", { bg = add_text_bg })
   set("RynoDeleteText", { bg = del_text_bg })
   set("RynoAddDone", { bg = change_bg })
-  set("RynoDeleteDone", { bg = change_bg })
   -- indentation-only lines: just a sign and the changed indentation, no full-line tint
   set("RynoIndent", { bg = blend(get("Added").fg or get("DiffAdd").fg or 0x40c060, base, 0.10) })
   set("RynoIndentSign", { fg = get("Comment").fg })
@@ -420,6 +419,8 @@ local function unified_view(r, v)
       -- the rejected proposal (struck through), then the original lines it keeps
       for k, l in ipairs(h.new) do add_row(v, l, { h = h, side = "new", i = k }) end
       for k, l in ipairs(h.old) do add_row(v, l, { h = h, side = "old", i = k }) end
+    elseif h.state == "accepted" then
+      for k, l in ipairs(h.new) do add_row(v, l, { h = h, side = "new", i = k }) end
     else
       match_lines(h)
       local olds, i, j = shown_old(h), 1, 1
@@ -641,8 +642,10 @@ end
 --- One row of the unified view: removed lines red, proposed lines green, word changes emphasised.
 local function decorate_unified(v, row, e)
   local h, buf, row0 = e.h, v.buf, row - 1
-  local done = h.state == "accepted"
-  if h.state == "rejected" then
+  if h.state == "accepted" then
+    line_hl(buf, row0, "RynoAddDone")
+    sign(buf, row0, "✓", "RynoAddDone")
+  elseif h.state == "rejected" then
     if e.side == "new" then
       line_hl(buf, row0, "RynoRejected")
       sign(buf, row0, "~", "RynoRejectedSign")
@@ -650,23 +653,23 @@ local function decorate_unified(v, row, e)
       sign(buf, row0, "✗", "RynoRejectedSign")
     end
   elseif e.side == "old" then
-    line_hl(buf, row0, done and "RynoDeleteDone" or "RynoDelete")
-    sign(buf, row0, done and "✓" or "-", done and "RynoDeleteDone" or "RynoDeleteSign")
-    if not done then spans_hl(buf, row0, h.old_spans[e.i], "RynoDeleteText") end
+    line_hl(buf, row0, "RynoDelete")
+    sign(buf, row0, "-", "RynoDeleteSign")
+    spans_hl(buf, row0, h.old_spans[e.i], "RynoDeleteText")
   else
     local from = h.new_moved and h.new_moved[e.i]
     if from then
       -- Only the indentation changed: tint just the indentation that was added.
       local a, b = #h.old[from]:match("^%s*"), #h.new[e.i]:match("^%s*")
-      sign(buf, row0, done and "✓" or (b > a and "→" or "←"), done and "RynoAddDone" or "RynoIndentSign")
+      sign(buf, row0, b > a and "→" or "←", "RynoIndentSign")
       if b > a then
         api.nvim_buf_set_extmark(buf, ns, row0, a, { end_col = b, hl_group = "RynoIndent", strict = false, priority = 4200 })
       end
       return
     end
-    line_hl(buf, row0, done and "RynoAddDone" or "RynoAdd")
-    sign(buf, row0, done and "✓" or "+", done and "RynoAddDone" or "RynoAddSign")
-    if not done then spans_hl(buf, row0, h.new_spans[e.i], "RynoAddText") end
+    line_hl(buf, row0, "RynoAdd")
+    sign(buf, row0, "+", "RynoAddSign")
+    spans_hl(buf, row0, h.new_spans[e.i], "RynoAddText")
   end
 end
 
@@ -691,10 +694,6 @@ local function diagnostics(r)
 end
 
 local function render(r)
-  for _, h in ipairs(r.hunks) do
-    match_lines(h)
-    shown_old(h)
-  end
   r.main = new_view(r.win, r.buf)
   if r.layout == "split" then proposed_view(r, r.main) else unified_view(r, r.main) end
   set_lines(r.buf, r.main.lines)
@@ -723,7 +722,11 @@ local function render(r)
       if e.h then decorate_unified(r.main, row, e) end
     end
     for _, h in ipairs(r.hunks) do
-      if h.state == "rejected" and (h.comment or r.main.count[h] == 0) then place_rejected_header(r, r.main, h, false) end
+      if h.state == "rejected" and (h.comment or r.main.count[h] == 0) then
+        place_rejected_header(r, r.main, h, false)
+      elseif h.state == "accepted" and r.main.count[h] == 0 then
+        sign(r.buf, hunk_row(r.main, h) - 1, "✓", "RynoAddDone")
+      end
     end
   end
   for _, h in ipairs(r.hunks) do place_notes(r, h) end

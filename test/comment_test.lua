@@ -157,5 +157,25 @@ ok(table.concat(api.nvim_buf_get_lines(r.buf, 0, -1, false), "\n") .. "\n"
 review.accept_all()
 ok(sent and sent.action == "accept", "aligned hunk can be accepted")
 
+-- 8. An accepted hunk shows only the kept text, and undo restores both sides.
+cfg.confirm_send = true
+r = start("l5", "before\nold value\nafter\n", "before\nnew value\nafter\n")
+review.accept_hunk()
+ok(review.active == r and r.hunks[1].state == "accepted", "accepted hunk remains open for confirmation")
+ok(vim.deep_equal(api.nvim_buf_get_lines(r.buf, 0, -1, false), { "before", "new value", "after" }),
+  "accepted replacement hides its removed line")
+api.nvim_win_set_cursor(r.win, { 2, 0 })
+api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>iu", true, false, true), "x", false)
+ok(vim.deep_equal(api.nvim_buf_get_lines(r.buf, 0, -1, false), { "before", "old value", "new value", "after" }),
+  "undo restores both sides of the replacement")
+review.reject_all()
+
+r = start("l6", "before\nremove me\n", "before\n")
+review.accept_hunk()
+ok(vim.deep_equal(api.nvim_buf_get_lines(r.buf, 0, -1, false), { "before" }), "accepted deletion hides all deleted lines")
+api.nvim_feedkeys(api.nvim_replace_termcodes("<leader>iu", true, false, true), "x", false)
+ok(r.hunks[1].state == "pending", "accepted deletion can be undone from its anchor")
+review.reject_all()
+
 print(fails == 0 and "ALL OK" or (fails .. " FAILED"))
 os.exit(fails == 0 and 0 or 1)
