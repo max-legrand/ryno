@@ -188,16 +188,16 @@ end
 ---
 --- Leading indentation is never emphasised: a re-indented block (e.g. code wrapped in a new `with`/`if`)
 --- would otherwise be a wall of highlighted whitespace. Lines that differ only in indentation return nil.
----@return integer[][]|nil, integer[][]|nil
+---@return integer[][]|nil, integer[][]|nil, number|nil similarity
 function M.inline(a, b)
   if a == b then return nil end
   local ia, ib = #a:match("^%s*"), #b:match("^%s*")
   if ia > 0 or ib > 0 then
-    local ra, rb = M.inline(a:sub(ia + 1), b:sub(ib + 1))
+    local ra, rb, similarity = M.inline(a:sub(ia + 1), b:sub(ib + 1))
     if not ra then return nil end
     for _, r in ipairs(ra) do r[1], r[2] = r[1] + ia, r[2] + ia end
     for _, r in ipairs(rb) do r[1], r[2] = r[1] + ib, r[2] + ib end
-    return ra, rb
+    return ra, rb, similarity
   end
   local ta, sa = tokenize(a)
   local tb, sb = tokenize(b)
@@ -220,35 +220,38 @@ function M.inline(a, b)
   -- Similarity (Dice): visible characters both lines keep, relative to their average length.
   local na, nb = non_ws(a), non_ws(b)
   local kept = math.min(na - changed_a, nb - changed_b)
-  if na + nb > 0 and 2 * kept / (na + nb) < 0.4 then return nil end
-  return ranges(a, sa, ra), ranges(b, sb, rb)
+  local similarity = na + nb > 0 and 2 * kept / (na + nb) or 1
+  if similarity < 0.4 then return nil end
+  return ranges(a, sa, ra), ranges(b, sb, rb), similarity
 end
 
 --- Pair up the removed and added lines of a hunk that are edits of each other, in order, and diff them.
---- Returns old_spans[i] and new_spans[j]: the changed byte ranges of paired lines (unpaired: nil).
----@return table<integer, integer[][]>, table<integer, integer[][]>
+--- Returns the changed byte ranges on each side and a map from paired old indices to new indices.
+---@return table<integer, integer[][]>, table<integer, integer[][]>, table<integer, integer>
 function M.inline_hunk(old, new)
-  local old_spans, new_spans = {}, {}
-  if #old == 0 or #new == 0 or #old * #new > 40000 then return old_spans, new_spans end
+  local old_spans, new_spans, matches = {}, {}, {}
+  if #old == 0 or #new == 0 or #old * #new > 40000 then return old_spans, new_spans, matches end
   local from = 1
   for i = 1, #old do
-    -- Look a few lines ahead so a line inserted in the middle doesn't shift every pairing after it.
+    local best, best_a, best_b, score
+    -- Pick the strongest nearby match, not the first plausible one (e.g. another function header).
     for j = from, math.min(#new, from + 8) do
-      local ra, rb
       if (old[i]:gsub("^%s+", "")) == (new[j]:gsub("^%s+", "")) then
-        -- unchanged or only re-indented (e.g. inside a merged hunk): paired, nothing to emphasise
-        ra, rb = {}, {}
-      else
-        ra, rb = M.inline(old[i], new[j])
-      end
-      if ra then
-        old_spans[i], new_spans[j], from = ra, rb, j + 1
+        -- Unchanged or only re-indented: nothing to emphasise.
+        best, best_a, best_b = j, {}, {}
         break
       end
+      local ra, rb, similarity = M.inline(old[i], new[j])
+      if similarity and (not score or similarity > score) then
+        best, best_a, best_b, score = j, ra, rb, similarity
+      end
+    end
+    if best then
+      matches[i], old_spans[i], new_spans[best], from = best, best_a, best_b, best + 1
     end
     if from > #new then break end
   end
-  return old_spans, new_spans
+  return old_spans, new_spans, matches
 end
 
 --- Lines of a hunk that only changed indentation, matched by diffing the lines with leading whitespace

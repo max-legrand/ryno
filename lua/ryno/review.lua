@@ -408,6 +408,12 @@ local function build(v, r, body)
   for i = pos, #r.old do add_row(v, r.old[i], { i = i }) end
 end
 
+local function match_lines(h)
+  if not h.new_spans then
+    h.old_spans, h.new_spans, h.matches = diff.inline_hunk(h.old, h.new)
+  end
+end
+
 local function unified_view(r, v)
   build(v, r, function(h)
     if h.state == "rejected" then
@@ -415,8 +421,33 @@ local function unified_view(r, v)
       for k, l in ipairs(h.new) do add_row(v, l, { h = h, side = "new", i = k }) end
       for k, l in ipairs(h.old) do add_row(v, l, { h = h, side = "old", i = k }) end
     else
-      for _, k in ipairs(shown_old(h)) do add_row(v, h.old[k], { h = h, side = "old", i = k }) end
-      for k, l in ipairs(h.new) do add_row(v, l, { h = h, side = "new", i = k }) end
+      match_lines(h)
+      local olds, i, j = shown_old(h), 1, 1
+      local function old_until(stop)
+        while i <= #olds and olds[i] < stop do
+          local k = olds[i]
+          add_row(v, h.old[k], { h = h, side = "old", i = k })
+          i = i + 1
+        end
+      end
+      local function new_until(stop)
+        while j < stop do
+          add_row(v, h.new[j], { h = h, side = "new", i = j })
+          j = j + 1
+        end
+      end
+      -- Show insertions before the line they precede, then the old/new replacement together.
+      for k = 1, #h.old do
+        local paired = h.matches[k]
+        if paired then
+          old_until(k)
+          new_until(paired)
+          old_until(k + 1)
+          new_until(paired + 1)
+        end
+      end
+      old_until(#h.old + 1)
+      new_until(#h.new + 1)
     end
   end)
 end
@@ -661,7 +692,7 @@ end
 
 local function render(r)
   for _, h in ipairs(r.hunks) do
-    if not h.new_spans then h.old_spans, h.new_spans = diff.inline_hunk(h.old, h.new) end
+    match_lines(h)
     shown_old(h)
   end
   r.main = new_view(r.win, r.buf)

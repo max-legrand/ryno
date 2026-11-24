@@ -145,5 +145,17 @@ ok(sent and sent.action == "accept", "accepted from split")
 ok(not api.nvim_win_is_valid(left_win), "original pane closed after the review")
 cfg.layout = nil
 
+-- 7. An insertion before an edited line precedes both copies of that line in unified view.
+local old_sig = "def retime(plan, first_new_leg, remaining_duration):"
+local new_sig = "def retime(plan, first_new_leg, remaining_duration, *, minimum=None):"
+local helper = "def check_stride_pace(seconds, minimum, maximum):\n    return minimum <= seconds <= maximum\n\n\n"
+local body = "\n    future = plan['legs'][first_new_leg:]\n"
+r = start("l4", old_sig .. body, helper .. new_sig .. body)
+ok(#r.hunks == 1, "insertion and signature edit are still one review hunk")
+ok(table.concat(api.nvim_buf_get_lines(r.buf, 0, -1, false), "\n") .. "\n"
+  == helper .. old_sig .. "\n" .. new_sig .. body, "helper shown above adjacent retime signatures")
+review.accept_all()
+ok(sent and sent.action == "accept", "aligned hunk can be accepted")
+
 print(fails == 0 and "ALL OK" or (fails .. " FAILED"))
 os.exit(fails == 0 and 0 or 1)

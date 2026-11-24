@@ -87,5 +87,12 @@ eq({ d.inline("same", "same") }, {}, "inline: identical -> nil")
 local os_, ns_ = d.inline_hunk({ "a = 1", "b = 2" }, { "a = 10", "inserted line here", "b = 20" })
 eq({ texts("a = 1", os_[1]), texts("b = 2", os_[2]) }, { { "1" }, { "2" } }, "inline_hunk: old spans")
 eq({ ns_[1] ~= nil, ns_[2] == nil, texts("b = 20", ns_[3]) }, { true, true, { "20" } }, "inline_hunk: inserted line skipped, later line still paired")
+
+local previous = "weights = np.random.dirichlet(values)"
+local inserted = "lengths = np.array(values)"
+local updated = "weights = np.random.dirichlet(lengths)"
+assert(d.inline(previous, inserted), "fixture: inserted line is a plausible match")
+local _, _, paired = d.inline_hunk({ previous }, { inserted, updated })
+eq(paired, { 2 }, "inline_hunk: strongest match wins over earlier plausible insertion")
 print(fails == 0 and "diff tests OK" or (fails .. " FAILED"))
 os.exit(fails == 0 and 0 or 1)
